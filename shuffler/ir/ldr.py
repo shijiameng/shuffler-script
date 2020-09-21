@@ -18,7 +18,6 @@ class LoadLiteralIR(RefIR):
         else:
             return self.__repr__()
 
-
     @property
     def reg(self):
         return self.__reg

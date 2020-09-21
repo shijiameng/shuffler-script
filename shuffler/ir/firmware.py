@@ -21,13 +21,21 @@ class FirmwareIR(BlockIR):
     def append_child(self, fn: IR, align=2):
         assert align in (2, 4)
 
-        if align == 4 and (self.addr + self._pos) % 4 != 0:
-            super().append_child(NopIR(0))
+        # if fn.name == "vRestoreContextOfFirstTask":
+        #     print("======")
+        #     print(hex(self.addr + self._pos))
+        # if align == 4 and (self.addr + self._pos) % 4 != 0:
+        #     super().append_child(NopIR(0))
+        #
+        # if fn.name == "vRestoreContextOfFirstTask":
+        #     print("======")
+        #     print(hex(self.addr + self._pos))
 
         super().append_child(fn)
 
-    def insert_child(self, src_ir, new_ir, pos='before'):
-        pass
+        # if fn.name == "vRestoreContextOfFirstTask":
+        #     print("======!!!")
+        #     print(hex(fn.addr))
 
     def commit(self):
         fn = filter(lambda x: isinstance(x, FunctionIR), self._child)
@@ -44,15 +52,27 @@ class FirmwareIR(BlockIR):
                             print(ir)
                         assert ir.ref
 
-    def save_as_file(self, path):
-        # with open(path, "wb") as stream:
-        #     for i in self.child_iter():
-        #         if not isinstance(i, FunctionIR):
-        #             assert len(i.code) > 0
-        #             stream.write(i.code)
-        #         else:
-        #             for ir in i.child_iter():
-        #                 assert len(ir.code) > 0
-        #                 stream.write(ir.code)
-        pass
+    def verify(self):
+        pos = 0
+        for i in self._child:
+            if hasattr(i, "verify"):
+                i.verify()
 
+            if i.offset != pos:
+                print("%s, offset is incorrect!")
+                assert 1 == 0
+            else:
+                pos += i.len
+
+    def output_to_stream(self, ir, stream):
+        if not hasattr(ir, "child_iter"):
+            stream.write(ir.code)
+            return len(ir.code)
+        else:
+            for i in ir.child_iter():
+                return self.output_to_stream(i, stream)
+
+    def save_as_file(self, path):
+        with open(path, "wb") as stream:
+            stream.write(self.code)
+            stream.write(b'\x00' * 1024)

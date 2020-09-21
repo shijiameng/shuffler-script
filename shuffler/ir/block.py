@@ -1,9 +1,11 @@
 from .ir import IR
+from copy import deepcopy
 
 
 class BlockIR(IR):
     def __init__(self, offset, init_pos=0, parent=None):
         super().__init__(offset, None, parent)
+        self._init_pos = init_pos
         self._pos = init_pos
         self._child = list()
         self._len = 0
@@ -25,10 +27,9 @@ class BlockIR(IR):
 
         return irstr.rstrip()
 
-
     @property
     def code(self):
-        c = self._code
+        c = deepcopy(self._code)
         for i in self._child:
             c += i.code
         return c
@@ -39,13 +40,21 @@ class BlockIR(IR):
 
     @property
     def len(self):
-        return self._len
+        length = 0
+        for i in self._child:
+            length += i.len
+        return length
 
     def __stretch(self, where, size):
         for i in self._child[where:]:
             i.offset += size
         self._pos += size
         self._len += size
+
+    def stretch(self, ir, stretch_size):
+        if stretch_size != 0:
+            idx = self._child.index(ir) + 1
+            self.__stretch(idx, stretch_size)
 
     def append_child(self, ir):
         ir.parent = self
@@ -70,8 +79,8 @@ class BlockIR(IR):
             new_ir.offset = self._child[idx].offset
             self.__stretch(idx, new_ir.len)
             self._child.insert(idx, new_ir)
-            self._len += new_ir.len
-            self._pos += new_ir.len
+            # self._len += new_ir.len
+            # self._pos += new_ir.len
         else:
             new_ir.offset = src_ir.offset
             self._child[idx] = new_ir
@@ -80,8 +89,12 @@ class BlockIR(IR):
 
     def layout_refresh(self):
         self._child = list(filter(lambda x: not hasattr(x, "void"), self._child))
+        self._pos = self._init_pos
+        self._len = 0
         for i in self._child:
             i.offset = self._pos
+            if hasattr(i, "layout_refresh"):
+                i.layout_refresh()
             self._pos += i.len
             self._len += i.len
 

@@ -3,6 +3,7 @@ from capstone import *
 from keystone import *
 
 from shuffler.ir.utils import get_cond_name
+from copy import deepcopy
 
 
 class IR:
@@ -57,7 +58,7 @@ class IR:
 
     @property
     def code(self):
-        return self._code
+        return deepcopy(self._code)
 
     @property
     def cond(self):

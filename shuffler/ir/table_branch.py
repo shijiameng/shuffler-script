@@ -35,7 +35,7 @@ class TableBranchIR(IR):
 
 
 class BranchTableIR(BlockIR):
-    pass
+    entry_size = 4
 
 
 class TableBranchEntryIR(RefIR):
@@ -43,13 +43,16 @@ class TableBranchEntryIR(RefIR):
         super().__init__(offset, parent)
         self._len = length
 
-    def __str__(self):
+    def __repr__(self):
         if self._len == 1:
             return "%s: jump to %s (.byte 0x%02x)" % (hex(self.addr), hex(self.ref_addr), self.value)
         elif self._len == 2:
             return "%s: jump to %s (.short 0x%04x)" % (hex(self.addr), hex(self.ref_addr), self.value)
         else:
             return "%s: jump to %s (.word 0x%08x)" % (hex(self.addr), hex(self.ref_addr), self.value)
+
+    def __str__(self):
+        return self.__repr__()
 
     @property
     def len(self):

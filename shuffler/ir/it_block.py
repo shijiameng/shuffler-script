@@ -27,6 +27,10 @@ class ITBlockIR(BlockIR):
         # return irstr
 
     @property
+    def len(self):
+        return 2 + super().len
+
+    @property
     def first_cond(self):
         return self.__first_cond
 
@@ -53,15 +57,16 @@ class ITBlockIR(BlockIR):
         else:
             raise ITBlockFull
 
-    def layout_refresh(self):
-        self._pos = 2
-        self._len = 2
-        super().layout_refresh()
+    # def layout_refresh(self):
+    #     self._pos = 2
+    #     self._len = 2
+    #     super().layout_refresh()
 
     def split(self, where):
         assert where < len(self._child)
         it_block = ITBlockIR(0)
         it_block.first_cond = self._child[where].cond
+        # FIXIT
         for i in self._child[where:]:
             it_block.append_child(i)
             self._len -= i.len

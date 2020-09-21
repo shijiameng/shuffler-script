@@ -14,3 +14,11 @@ class ObjectIR(IR):
     @property
     def name(self):
         return self._name
+
+    @property
+    def code(self):
+        return super().code
+
+    @code.setter
+    def code(self, v):
+        self._code = bytearray(v)

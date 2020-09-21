@@ -35,6 +35,10 @@ class Symbol:
         self.__md.skipdata_callback = lambda b, s, o, u: 4
         self.__md.skipdata = True
 
+        if len(code) != size:
+            print(len(code))
+            print(size)
+
         assert(len(code) == size)
 
     @property
@@ -58,6 +62,7 @@ class Symbol:
         limit = self.UINT32_MAX
         pos = 0
         ir = BranchTableIR(base)
+        ir.entry_size = item_length
 
         while base + pos < limit and base + pos not in self.__branch_targets:
             value = int.from_bytes(jmp_tbl[pos:pos + item_length], byteorder='little')
