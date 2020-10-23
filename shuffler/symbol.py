@@ -13,7 +13,6 @@ from .ir.pop import *
 
 
 class Symbol:
-
     UINT32_MAX = 0xFFFFFFFF
     reloc = None
 
@@ -39,7 +38,7 @@ class Symbol:
             print(len(code))
             print(size)
 
-        assert(len(code) == size)
+        assert (len(code) == size)
 
     @property
     def address(self):
@@ -110,7 +109,7 @@ class Symbol:
 
         if inst.id == ARM_INS_ADR:
             # instruction "ADD Rd, PC, #<const> (ADR Rd, <label>)"
-            pc = ((inst.address - 1) + 4) & ~3
+            pc = ((inst.address - 1) + 4)
             self.__jmp_tbl_br = inst.operands[0].value.reg
             self.__jmp_tbl_bv = pc + inst.operands[1].value.imm
             ir = IR(bufp, inst.bytes)

@@ -38,7 +38,10 @@ class LoadLiteralIR(RefIR):
             disp = self.__calc_disp()
             asmcode = "ldr %s, [pc, #%d]" % (self.reg, disp) \
                 if not self.wide else "ldr.w %s, [pc, #%d]" % (self.reg, disp)
-            code, count = IR._ks.asm(asmcode)
+            try:
+                code, count = IR._ks.asm(asmcode)
+            except KsError:
+                print(asmcode)
             assert len(code) == self.len
             self._code = bytearray(code)
         else:

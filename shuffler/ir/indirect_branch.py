@@ -3,10 +3,10 @@ from .arm_reg import *
 
 
 class IndirectBranchIR(IR):
-    def __init__(self, offset, parent=None):
+    def __init__(self, reg=ARM_REG_R0, link=False, offset=0, parent=None):
         super().__init__(offset, None, parent)
-        self.__reg = ArmReg(ARM_REG_R0)
-        self.__link = False
+        self.__reg = ArmReg(reg)
+        self.__link = link
 
     def __repr__(self):
         if self.link:

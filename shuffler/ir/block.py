@@ -105,6 +105,9 @@ class BlockIR(IR):
     def child_index(self, ir):
         return self._child.index(ir)
 
+    def child_at(self, index):
+        return self._child[index]
+
     def asm(self):
         for i in self._child:
             i.asm()

@@ -3,6 +3,55 @@ from .function import FunctionIR
 from .ir import IR
 
 
+class LoadReturnIndexIR(IR):
+    count = 0
+
+    def __init__(self, caller_index, offset=0, parent=None):
+        super().__init__(offset, None, parent)
+        self._id = LoadReturnIndexIR.count
+        self._caller_index = caller_index
+        LoadReturnIndexIR.count += 1
+
+    def __repr__(self):
+        return "%s: LR = %d" % (hex(self.addr), self.id)
+
+    def __str__(self):
+        if len(self._code) > 0:
+            return super().__str__()
+        else:
+            return self.__repr__()
+
+    @property
+    def id(self):
+        return self._id
+
+    @property
+    def ret_offset(self):
+        if not isinstance(self.parent, FunctionIR):
+            return self.parent.offset + self._offset + 8
+        else:
+            return self._offset + 8
+
+    @property
+    def caller_index(self):
+        return self._caller_index
+
+    @property
+    def len(self):
+        return 4
+
+    @property
+    def encode(self):
+        # return (((1 << 12) | self.caller_index) << 16) | (self.ret_offset + 1)
+        return (self.caller_index << 16) | self.ret_offset
+
+    def asm(self):
+        asmcode = "movw lr, #%d" % ((self.id << 1) | 1)
+        code, count = IR._ks.asm(asmcode)
+        assert len(code) == self.len
+        self._code = bytearray(code)
+
+
 class LoadReturnOffsetIR(IR):
     def __init__(self, offset=0, parent=None):
         super().__init__(offset, None, parent)
@@ -28,7 +77,7 @@ class LoadReturnOffsetIR(IR):
             return self._offset + 12
 
     def asm(self):
-        asmcode = "movw lr, #%s" % hex(self.ret_offset)
+        asmcode = "movw lr, #%s" % hex(self.ret_offset + 1)
         code, count = IR._ks.asm(asmcode)
         assert len(code) == self.len
         self._code = bytearray(code)
@@ -48,7 +97,6 @@ class LoadCallerIndexIR(IR):
         else:
             return self.__repr__()
 
-
     @property
     def len(self):
         return 4
@@ -62,7 +110,7 @@ class LoadCallerIndexIR(IR):
         self.__caller_index = v
 
     def asm(self):
-        asmcode = "movt lr, #%d" % self.caller_index
+        asmcode = "movt lr, #%d" % ((1 << 12) | self.caller_index)
         code, count = IR._ks.asm(asmcode)
         assert len(code) == self.len
         self._code = bytearray(code)

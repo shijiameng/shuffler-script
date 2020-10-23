@@ -75,4 +75,3 @@ class FirmwareIR(BlockIR):
     def save_as_file(self, path):
         with open(path, "wb") as stream:
             stream.write(self.code)
-            stream.write(b'\x00' * 1024)

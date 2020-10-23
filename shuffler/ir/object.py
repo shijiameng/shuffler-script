@@ -6,6 +6,7 @@ class ObjectIR(IR):
         super().__init__(offset, code, parent)
         self._name = name
         if len(self._code) % 2 != 0:
+            print("%s: %d" % (name, len(self._code)))
             self._code += b'\xff'
 
     def __str__(self):

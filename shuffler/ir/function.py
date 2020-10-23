@@ -47,6 +47,7 @@ class FunctionIR(BlockIR):
             children = list(filter(lambda x: (not isinstance(x, NopIR) or hasattr(x, "ref_by") or
                                               self.name == "SVC_Handler" or self.name == "vStartFirstTask")
                                              and not hasattr(x, "void"), children))
+            # children = list(children)
             where_nop = list()
             self._pos = 0
             # assign offset for each instruction
