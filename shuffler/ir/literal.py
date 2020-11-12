@@ -1,5 +1,9 @@
+from .block import BlockIR
 from .ref import *
-from .arm_reg import *
+
+
+class LiteralPoolIR(BlockIR):
+    pass
 
 
 class LiteralIR(IR):

@@ -5,9 +5,10 @@ from .arm_reg import *
 
 
 class LoadLiteralIR(RefIR):
-    def __init__(self, offset, parent=None):
+    def __init__(self, offset=0, parent=None):
         super().__init__(offset, parent)
         self.__reg = None
+
 
     def __repr__(self):
         return "%s: %s = Mem[%s] (%s)" % (hex(self.addr), self.reg, hex(self.ref_addr), self.ref)

@@ -41,6 +41,7 @@ class BranchTableIR(BlockIR):
 class TableBranchEntryIR(RefIR):
     def __init__(self, offset, length=4, parent=None):
         super().__init__(offset, parent)
+        self.__enforce_offset = False
         self._len = length
 
     def __repr__(self):
@@ -55,6 +56,15 @@ class TableBranchEntryIR(RefIR):
         return self.__repr__()
 
     @property
+    def enforce_use_offset(self):
+        return self.__enforce_offset
+
+    @enforce_use_offset.setter
+    def enforce_use_offset(self, v):
+        assert isinstance(v, bool)
+        self.__enforce_offset = v
+
+    @property
     def len(self):
         return self._len
 
@@ -67,6 +77,8 @@ class TableBranchEntryIR(RefIR):
     def value(self):
         if self.len != 4:
             return tohex(self.__calc_disp(), 32) >> 1
+        elif self.__enforce_offset:
+            return (self.ref.addr - self.parent.parent.addr) >> 1
         else:
             return self.parent.addr + self.__calc_disp() + 1
 
@@ -87,6 +99,8 @@ class TableBranchEntryIR(RefIR):
             disp = self.__calc_disp()
             if self.len != 4:
                 target = disp >> 1
+            elif self.__enforce_offset:
+                target = self.ref.addr - self.parent.parent.addr
             else:
                 target = self.parent.addr + disp + 1
             self._code = bytearray(target.to_bytes(self.len, byteorder='little'))

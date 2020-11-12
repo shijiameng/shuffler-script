@@ -84,9 +84,11 @@ class LoadReturnOffsetIR(IR):
 
 
 class LoadCallerIndexIR(IR):
-    def __init__(self, idx, offset=0, parent=None):
+    def __init__(self, idx, reg, offset=0, parent=None):
         super().__init__(offset, None, parent)
         self.__caller_index = idx
+        assert isinstance(reg, ArmReg)
+        self.__reg = reg
 
     def __repr__(self):
         return "%s: LR[31:16] = %d" % (hex(self.addr), self.caller_index)
@@ -109,9 +111,21 @@ class LoadCallerIndexIR(IR):
     def caller_index(self, v):
         self.__caller_index = v
 
+    @property
+    def reg(self):
+        return self.__reg
+
+    @reg.setter
+    def reg(self, v):
+        assert isinstance(v, ArmReg)
+        self.__reg = v
+
     def asm(self):
-        asmcode = "movt lr, #%d" % ((1 << 12) | self.caller_index)
+        # print(self.__reg.id)
+        asmcode = "movt %s, #%d" % (str(self.reg.id), self.caller_index)
         code, count = IR._ks.asm(asmcode)
+        if len(code) != self.len:
+            print(asmcode)
         assert len(code) == self.len
         self._code = bytearray(code)
 

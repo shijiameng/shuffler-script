@@ -1,5 +1,3 @@
-from keystone import KsError
-
 from .block import *
 from .utils import *
 

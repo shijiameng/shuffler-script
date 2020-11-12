@@ -13,7 +13,7 @@ class IR:
     _md.skipdata = True
     _md.detail = True
 
-    def __init__(self, offset, code, parent=None):
+    def __init__(self, offset=0, code=None, parent=None):
         self._parent = parent
         self._offset = offset
         if code:

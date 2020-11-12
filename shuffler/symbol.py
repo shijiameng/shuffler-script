@@ -1,10 +1,12 @@
 from capstone import *
 
+from .ir.adr import AddressToRegisterIR
 from .ir.branch import BranchIR
 from .ir.cond_branch import CondBranchIR
 from .ir.it_block import ITBlockIR
 from .ir.ldr import LoadLiteralIR
 from .ir.literal import *
+from .ir.load_branch_address import LoadBranchAddressIR
 from .ir.nop import NopIR
 from .ir.ret import ReturnIR
 from .ir.table_branch import *
@@ -73,8 +75,7 @@ class Symbol:
                 item = TableBranchEntryIR(base, item_length)
                 item.ref_addr = offset
                 # if item_length == 4:
-                #     print("value: %08x, offset: %s" % (value, hex(offset)))
-                #     print("pos: %s, limit: %s" % (hex(base + pos), hex(limit)))
+                #     item.enforce_use_offset = True
                 if offset > base:
                     limit = min(offset, limit)
                 ir.append_child(item)
@@ -87,7 +88,7 @@ class Symbol:
     def __handle_literal_pool(self, base):
         literal_pool = self.__code[base:]
         pos = 0
-        ir = BlockIR(base)
+        ir = LiteralPoolIR(base)
 
         lp_limit = self.__literal_pool_limit - self.__address + 1
         while base + pos < lp_limit:
@@ -109,10 +110,14 @@ class Symbol:
 
         if inst.id == ARM_INS_ADR:
             # instruction "ADD Rd, PC, #<const> (ADR Rd, <label>)"
-            pc = ((inst.address - 1) + 4)
+            pc = ((inst.address - 1) + 4) & ~3
             self.__jmp_tbl_br = inst.operands[0].value.reg
             self.__jmp_tbl_bv = pc + inst.operands[1].value.imm
-            ir = IR(bufp, inst.bytes)
+            literal_address = pc + inst.operands[1].value.imm
+            ir = AddressToRegisterIR(reg=ArmReg(inst.operands[0].value.reg), offset=bufp)
+            ir.ref_addr = literal_address - self.address + 1
+            ir.len = inst.size
+            # ir = IR(bufp, inst.bytes)
             # print(hex(inst.address - 1))
             # print(hex(self.__jmp_tbl_bv))
 
@@ -124,13 +129,14 @@ class Symbol:
             """
             if inst.operands[0].value.reg == ARM_REG_PC:
                 if inst.operands[1].value.mem.base == ARM_REG_SP:
-                    # TODO: handle function return
                     ir = ReturnIR(bufp)
                 else:
                     if self.__jmp_tbl_br == inst.operands[1].value.mem.base and \
                             inst.operands[1].value.mem.index != 0:
                         self.__jmp_tbl_il = 4
-                    ir = IR(bufp, inst.bytes)
+                    # ir = IR(bufp, inst.bytes)
+                    ir = LoadBranchAddressIR(base_reg=ArmReg(inst.operands[1].value.mem.base),
+                                             index_reg=ArmReg(inst.operands[1].value.mem.index))
             else:
                 if inst.operands[1].value.mem.base == ARM_REG_PC:
                     # handle literal pool
@@ -152,7 +158,20 @@ class Symbol:
                     ir.ref_addr = literal_address - self.address + 1
                 else:
                     ir = IR(bufp, inst.bytes)
+        elif inst.id == ARM_INS_LDRD:
+            if inst.operands[2].value.mem.base == self.__jmp_tbl_br:
+                if self.__literal_pool_base == self.UINT32_MAX:
+                    self.__literal_pool_base = self.__jmp_tbl_bv
+                else:
+                    self.__literal_pool_base = min(self.__literal_pool_base, self.__jmp_tbl_bv)
 
+                if self.__literal_pool_limit == self.UINT32_MAX:
+                    self.__literal_pool_limit = self.__literal_pool_base + 8
+                else:
+                    self.__literal_pool_limit = max(self.__literal_pool_limit, self.__jmp_tbl_bv + 8)
+
+                self.__jmp_tbl_br = self.__jmp_tbl_bv = -1
+            ir = IR(bufp, inst.bytes)
         elif inst.id in (ARM_INS_TBB, ARM_INS_TBH) and inst.operands[0].value.mem.base == ARM_REG_PC:
             # handle jump table
             ir = TableBranchIR(bufp, code=inst.bytes)
@@ -197,6 +216,8 @@ class Symbol:
         elif inst.id == ARM_INS_POP and inst.operands[-1].value.reg == ARM_REG_PC:
             ir = PopIR(bufp)
             ir.reg_list = {o.value.reg for o in inst.operands}
+
+            """mov pc, xxx"""
 
         else:
             ir = IR(bufp, inst.bytes)

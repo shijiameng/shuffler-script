@@ -15,12 +15,13 @@ from shuffler.ir.indirect_branch import IndirectBranchIR
 from shuffler.ir.ir import IR
 from shuffler.ir.it_block import ITBlockIR
 from shuffler.ir.ldr import LoadLiteralIR
-from shuffler.ir.literal import LiteralIR
+from shuffler.ir.literal import LiteralIR, LiteralPoolIR
+from shuffler.ir.load_branch_address import LoadBranchAddressIR
 from shuffler.ir.object import ObjectIR
 from shuffler.ir.pop import PopIR
+from shuffler.ir.reg_to_reg import RegisterToRegisterIR
 from shuffler.ir.ret import ReturnIR
-from shuffler.ir.ret_encode import LoadReturnOffsetIR, LoadCallerIndexIR, LoadFuncPtrIR, LoadReturnIndexIR
-from shuffler.ir.retrieve import RetrieveIR
+from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR, LoadCallerIndexIR
 from shuffler.ir.table_branch import TableBranchEntryIR
 from shuffler.ir.vector import VectorIR
 from shuffler.symbol import Symbol
@@ -168,11 +169,8 @@ def export_fn_symbols(elf):
 def symbol_translate(s, fw: FirmwareIR):
     if s.type == "STT_FUNC":
         ir = FunctionIR(s.name, 0, fw)
-        print(ir)
         for i in s.disasm():
             # print("%s: %s\t%s\n" % (hex(i.address), i.mnemonic, i.op_str))
-            if s.name == "pow":
-                print(i)
             ir.append_child(i)
         ir.commit()
         if s.address in fw.vector.vector:
@@ -227,21 +225,22 @@ def reference_handoff(dst_ir, src_ir):
         delattr(src_ir, "ref_by")
 
 
-def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
+def fn_instrument(fn: FunctionIR, fw: FirmwareIR, cmse_fn):
 
     if fn.name[0:8] == "__Secure":
         first_ir = None
         for i in fn.child_iter():
             first_ir = i
             break
-        # ir = IR(0, b"\x4e\xf0\x40\x5e")
-        # do_instrument(first_ir, IR(0, b"\x4f\xea\x4e\x0e"))  # lsl lr, lr, #1
         do_instrument(first_ir, IR(0, b"\x4e\xf0\x40\x5e"))  # orr lr, lr, #0x30000000
-        # do_instrument(first_ir, IR(0, b"\x4e\xf0\x01\x0e"))  # orr lr, lr, #1
     else:
         need_instrument = lambda x: isinstance(x, BranchIR) and x.link or \
                                     isinstance(x, IndirectBranchIR) or \
-                                    isinstance(x, PopIR) or isinstance(x, ReturnIR)
+                                    isinstance(x, PopIR) or \
+                                    isinstance(x, ReturnIR) or \
+                                    isinstance(x, LoadBranchAddressIR) or \
+                                    isinstance(x, LiteralPoolIR)
+        # literal_pool_instruments = list()
         i_point = list()
         for i in fn.child_iter():
             if isinstance(i, BlockIR):
@@ -258,10 +257,6 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                 if isinstance(i, BranchIR):
                     assert i.link
                     i.link = False
-                    # ir = LoadReturnOffsetIR(parent=fn)
-                    # reference_handoff(ir, i)
-                    # do_instrument(i, ir)
-                    # do_instrument(i, LoadCallerIndexIR(objects.index(fn), parent=fn))
                     ir = LoadReturnIndexIR(objects.index(fn), parent=fn)
                     reference_handoff(ir, i)
                     do_instrument(i, ir)
@@ -271,12 +266,10 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                             ir = LoadFuncPtrIR(i.reg, parent=fn)
                             reference_handoff(ir, i)
                             do_instrument(i, ir)
-                        # ir = LoadReturnOffsetIR(parent=fn)
                         ir = LoadReturnIndexIR(objects.index(fn), parent=fn)
                         if str(i.reg) == 'r12':
                             reference_handoff(ir, i)
                         do_instrument(i, ir)
-                        # do_instrument(i, LoadCallerIndexIR(objects.index(fn), parent=fn))
                         ir = BranchIR(i.offset, parent=fn)
                         ir.len = 4
                         ir.ref = fw.indirect_call_veneer
@@ -303,18 +296,6 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                     """
                     pop {pc} / ldr pc, [sp], #4
                     """
-                    # ir1 = RetrieveIR(i.offset, parent=fn)
-                    # if isinstance(i, PopIR):
-                    #     i.remove_reg(ARM_REG_PC)
-                    #     do_instrument(i, ir1, pos='after')
-                    # else:
-                    #     reference_handoff(ir1, i)
-                    #     do_instrument(i, ir1, pos='replace')
-                    # ir2 = BranchIR(ir1.offset, parent=fn)
-                    # ir2.len = 4
-                    # ir2.ref = fw.return_veneer
-                    # do_instrument(ir1, ir2, pos='after')
-
                     ir = BranchIR(0)
                     ir.len = 4
                     ir.ref = fw.return_veneer
@@ -325,8 +306,32 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                     else:
                         reference_handoff(ir, i)
                         do_instrument(i, ir, pos='replace')
+                # elif isinstance(i, LoadBranchAddressIR):
+                #     i.dest_reg = ArmReg(ARM_REG_R12)
+                #     ir = LoadCallerIndexIR(objects.index(fn), reg=ArmReg(i.dest_reg))
+                #     do_instrument(i, ir, pos='after')
+                #     # ir2 = RegisterToRegisterIR(dest_reg=ArmReg(ARM_REG_R12), src_reg=i.dest_reg)
+                #     # do_instrument(ir, ir2, pos='after')
+                #     ir3 = LoadLiteralIR(0)
+                #     ir3.reg = ArmReg(ARM_REG_PC)
+                #     ir3.ref = LiteralIR(0, value=cmse_fn['table_branch_dispatch'])
+                #     ir3.len = 4
+                #     do_instrument(ir, ir3, pos='after')
+                #     # do_instrument(ir3, IndirectBranchIR(reg=i.base_reg.id), pos='after')
+                #     literal_pool_instruments.append(ir3.ref)
+                # elif isinstance(i, LiteralPoolIR):
+                #     for e in literal_pool_instruments:
+                #         i.append_child(e)
+                #     literal_pool_instruments.clear()
                 else:
                     pass
+
+    # if len(literal_pool_instruments) > 0:
+    #     ir = LiteralPoolIR(0)
+    #     for e in literal_pool_instruments:
+    #         ir.append_child(e)
+    #     fn.append_child(ir)
+
     fn.commit()
 
 
@@ -463,16 +468,7 @@ def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     fn.append_child(ir)
     fn.append_child(ir2)
 
-    # fn0 = FunctionIR("return_veneer0", 0)
-    #
-    # fn0.append_child(IR(0, b"\x5d\xf8\x04\xeb"))
-    # ir = BranchIR(0)
-    # ir.ref = fn
-    # ir.len = 4
-    # fn0.append_child(ir)
-
     fw.insert_child(src, fn, pos='after')
-    # fw.insert_child(src, fn0, pos='after')
 
     orig_size = fn.len
     fn.layout_refresh()
@@ -481,23 +477,26 @@ def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     setattr(fw, "return_veneer", fn)
 
 
-def fw_instrument(fw, cmse_fn):
+def fw_instrument(fw, cmse_fn, has_rtos):
     fn_objs = list(filter(lambda x: isinstance(x, FunctionIR), [o for o in fw.child_iter()]))
     # instrument indirect call veneer
     indirect_branch_veneer_instrument(fw, fn_objs[-1], cmse_fn)
     indirect_call_veneer_instrument(fw, fn_objs[-1], cmse_fn)
     return_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-    PendSV_Hook_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-    PendSV_Hook_veneer_instrument(fw, fn_objs[-1], cmse_fn, vid=1)
+
+    if has_rtos:
+        PendSV_Hook_veneer_instrument(fw, fn_objs[-1], cmse_fn)
+        PendSV_Hook_veneer_instrument(fw, fn_objs[-1], cmse_fn, vid=1)
+
     fw.commit()
 
     for fn in fw.child_iter():
         if isinstance(fn, FunctionIR) and fn.name not in ("indirect_call_veneer", "return_veneer",
                                                           "indirect_branch_veneer",
                                                           "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
-            if fn.name == "PendSV_Handler":
+            if has_rtos and fn.name == "PendSV_Handler":
                 PendSV_instrument(fw, fn)
-            fn_instrument(fn, fw)
+            fn_instrument(fn, fw, cmse_fn)
 
 
 def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
@@ -518,7 +517,6 @@ def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
         else:
             # Encode function pointer as the shuffleable form
             assert objects.index(fw.fn_map[value - 1]["ir"]) <= 0xFFFF
-            # new_value = 0x10000001 | (objects.index(fw.fn_map[value - 1]["ir"]) << 12)
             new_value = ((0x1000 | objects.index(fw.fn_map[value - 1]["ir"])) << 16) + 1
     else:
         if value not in fw.fn_map:
@@ -598,7 +596,6 @@ def data_section_relocate(fw, orig_data, new_addr):
                 if value == orig_data:
                     code[offset:offset + 4] = bytearray(new_addr.to_bytes(4, byteorder="little"))
                     ir.code = code
-                    print("===> %s -> %s" % (hex(value), hex(new_addr)))
                 offset += 4
             break
 
@@ -681,10 +678,11 @@ def main(argv):
     output_path = ''
     entry_point = 0
     cmse_lib = ''
+    has_rtos = False
 
     try:
         opts, args = getopt.getopt(argv, 'c:e:hi:o:p:',
-                                   ['--cmse-lib', 'entry-point=', 'input-file=', 'output-file=', 'output-path'])
+                                   ['--cmse-lib', 'entry-point=', 'input-file=', 'output-file=', 'output-path', 'rtos'])
     except getopt.GetoptError:
         sys.exit(1)
 
@@ -699,6 +697,8 @@ def main(argv):
             output_file = arg
         elif opt in ('-p', '--output-path'):
             output_path = arg
+        elif opt == '--rtos':
+            has_rtos = True
         else:
             print('Invalid argument - %s' % opt)
             sys.exit(1)
@@ -714,10 +714,6 @@ def main(argv):
 
         for s in fn_symbols:
             fn = symbol_translate(s, fw)
-            # if (s.address - 1) % 4 == 0:
-            #     fw.append_child(fn, 4)
-            # else:
-            #     fw.append_child(fn)
             fw.append_child(fn)
             if s.type == "STT_FUNC":
                 fw.fn_map[s.address - 1] = dict(symbol=s, ir=fn)
@@ -728,7 +724,7 @@ def main(argv):
         fw.append_child(data_ir)
         fw.commit()
 
-        fw_instrument(fw, cmse_fn)
+        fw_instrument(fw, cmse_fn, has_rtos)
 
         fw.layout_refresh()
         fw.verify()
@@ -739,8 +735,6 @@ def main(argv):
         data_section_relocate(fw, text_end, data_ir.addr)
 
         for fn in fw.child_iter():
-            # if fn.name in ("PendSV_Handler", "__data_section_table", ".data", "indirect_call_veneer", "return_veneer",
-            #                "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
             print(fn)
             if isinstance(fn, FunctionIR):
                 if hasattr(fn, "child_iter"):
