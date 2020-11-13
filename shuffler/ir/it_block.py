@@ -19,10 +19,6 @@ class ITBlockIR(BlockIR):
             return super().__str__()
         else:
             return self.__repr__()
-        # irstr = "%s: IT Block (first condition: %s)" % (hex(self.addr), get_cond_name(self.first_cond))
-        # for i in self.child_iter():
-        #     irstr += "\n%s %s" % (i, get_cond_name(i.cond))
-        # return irstr
 
     @property
     def len(self):
@@ -55,11 +51,6 @@ class ITBlockIR(BlockIR):
         else:
             raise ITBlockFull
 
-    # def layout_refresh(self):
-    #     self._pos = 2
-    #     self._len = 2
-    #     super().layout_refresh()
-
     def split(self, where):
         assert where < len(self._child)
         it_block = ITBlockIR(0)
@@ -78,13 +69,10 @@ class ITBlockIR(BlockIR):
 
         asmcode = list('i')
         for i in self.child_iter():
-            # i.asm()
-            # self._code += i.code
             asmcode += 't' if i.cond == self.__first_cond else 'e'
 
         asmcode += ' ' + get_cond_name(self.__first_cond)
         code, count = IR._ks.asm(''.join(asmcode))
-        # self._code = bytearray(code) + self._code
         self._code = bytearray(code)
 
 

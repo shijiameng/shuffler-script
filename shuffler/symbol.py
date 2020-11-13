@@ -71,11 +71,9 @@ class Symbol:
                 offset = value - self.__address
             else:
                 offset = base + (value << 1)
-            if offset in range(0, self.__size):
+            if offset in range(self.__size):
                 item = TableBranchEntryIR(base, item_length)
                 item.ref_addr = offset
-                # if item_length == 4:
-                #     item.enforce_use_offset = True
                 if offset > base:
                     limit = min(offset, limit)
                 ir.append_child(item)
@@ -117,9 +115,6 @@ class Symbol:
             ir = AddressToRegisterIR(reg=ArmReg(inst.operands[0].value.reg), offset=bufp)
             ir.ref_addr = literal_address - self.address + 1
             ir.len = inst.size
-            # ir = IR(bufp, inst.bytes)
-            # print(hex(inst.address - 1))
-            # print(hex(self.__jmp_tbl_bv))
 
         elif inst.id == ARM_INS_LDR:
             """
@@ -134,7 +129,6 @@ class Symbol:
                     if self.__jmp_tbl_br == inst.operands[1].value.mem.base and \
                             inst.operands[1].value.mem.index != 0:
                         self.__jmp_tbl_il = 4
-                    # ir = IR(bufp, inst.bytes)
                     ir = LoadBranchAddressIR(base_reg=ArmReg(inst.operands[1].value.mem.base),
                                              index_reg=ArmReg(inst.operands[1].value.mem.index))
             else:
@@ -176,7 +170,6 @@ class Symbol:
             # handle jump table
             ir = TableBranchIR(bufp, code=inst.bytes)
             self.__jmp_tbl_br = ARM_REG_PC
-            # self.__jmp_tbl_bv = ((inst.address - 1) + 4) & ~3
             self.__jmp_tbl_bv = ((inst.address - 1) + 4)
             if inst.id == ARM_INS_TBB:
                 ir.entry_size = self.__jmp_tbl_il = 1
@@ -210,14 +203,11 @@ class Symbol:
             ir.first_cond = get_cond_id(inst.op_str)
 
         elif inst.id == ARM_INS_NOP:
-            # ignore NOP instruction
             ir = NopIR(bufp, inst.size == 4)
 
         elif inst.id == ARM_INS_POP and inst.operands[-1].value.reg == ARM_REG_PC:
             ir = PopIR(bufp)
             ir.reg_list = {o.value.reg for o in inst.operands}
-
-            """mov pc, xxx"""
 
         else:
             ir = IR(bufp, inst.bytes)

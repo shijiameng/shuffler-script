@@ -19,9 +19,8 @@ from shuffler.ir.literal import LiteralIR, LiteralPoolIR
 from shuffler.ir.load_branch_address import LoadBranchAddressIR
 from shuffler.ir.object import ObjectIR
 from shuffler.ir.pop import PopIR
-from shuffler.ir.reg_to_reg import RegisterToRegisterIR
 from shuffler.ir.ret import ReturnIR
-from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR, LoadCallerIndexIR
+from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
 from shuffler.ir.table_branch import TableBranchEntryIR
 from shuffler.ir.vector import VectorIR
 from shuffler.symbol import Symbol
