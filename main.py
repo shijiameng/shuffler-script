@@ -113,13 +113,20 @@ def export_fn_symbols(elf):
     gap_cnt = 0
     for i in range(len(raw_symbols)):
         s = raw_symbols[i]
-        st_value = s['st_value']
+        st_value = s['st_value'] & ~1 if s['st_info']['type'] == 'STT_FUNC' else s['st_value']
         st_size = s['st_size']
 
-        if prev_symbol and s['st_info']['type'] == 'STT_OBJECT' and prev_symbol['st_info']['type'] == 'STT_OBJECT':
-            if st_value - prev_symbol['st_value'] != prev_symbol['st_size']:
-                gap_size = st_value - prev_symbol['st_value'] - prev_symbol['st_size']
-                gap_addr = prev_symbol['st_value'] + prev_symbol['st_size']
+        if prev_symbol and s['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
+                prev_symbol['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC'):
+            prev_st_value = prev_symbol['st_value'] & ~1 \
+                if prev_symbol['st_info']['type'] == 'STT_FUNC' else prev_symbol['st_value']
+            prev_st_size = prev_symbol['st_size']
+            if st_value - prev_st_value != prev_st_size:
+                print("%s:%s" % (s.name, hex(st_value)))
+                print("%s:%s" % (prev_symbol.name, hex(prev_st_size)))
+                gap_size = st_value - prev_st_value - prev_st_size
+                print(hex(gap_size))
+                gap_addr = prev_st_value + prev_st_size
                 start = gap_addr - text_base
                 end = start + gap_size
                 fn_code = code[start:end]
@@ -138,7 +145,7 @@ def export_fn_symbols(elf):
 
         start = st_value - text_base
         if s['st_info']['type'] == 'STT_FUNC':
-            start -= 1
+            st_value += 1
 
         end = start + st_size
         fn_code = code[start:end]
@@ -162,10 +169,13 @@ def export_fn_symbols(elf):
                 sym.type = 'STT_OBJECT'
                 fn_symbols.append(sym)
 
+        fn_symbols.sort(key=lambda x: x.address)
+
     return fn_symbols, etext
 
 
 def symbol_translate(s, fw: FirmwareIR):
+    print(s.name)
     if s.type == "STT_FUNC":
         ir = FunctionIR(s.name, 0, fw)
         for i in s.disasm():
@@ -224,7 +234,7 @@ def reference_handoff(dst_ir, src_ir):
         delattr(src_ir, "ref_by")
 
 
-def fn_instrument(fn: FunctionIR, fw: FirmwareIR, cmse_fn):
+def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
 
     if fn.name[0:8] == "__Secure":
         first_ir = None
@@ -239,7 +249,6 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR, cmse_fn):
                                     isinstance(x, ReturnIR) or \
                                     isinstance(x, LoadBranchAddressIR) or \
                                     isinstance(x, LiteralPoolIR)
-        # literal_pool_instruments = list()
         i_point = list()
         for i in fn.child_iter():
             if isinstance(i, BlockIR):
@@ -305,31 +314,8 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR, cmse_fn):
                     else:
                         reference_handoff(ir, i)
                         do_instrument(i, ir, pos='replace')
-                # elif isinstance(i, LoadBranchAddressIR):
-                #     i.dest_reg = ArmReg(ARM_REG_R12)
-                #     ir = LoadCallerIndexIR(objects.index(fn), reg=ArmReg(i.dest_reg))
-                #     do_instrument(i, ir, pos='after')
-                #     # ir2 = RegisterToRegisterIR(dest_reg=ArmReg(ARM_REG_R12), src_reg=i.dest_reg)
-                #     # do_instrument(ir, ir2, pos='after')
-                #     ir3 = LoadLiteralIR(0)
-                #     ir3.reg = ArmReg(ARM_REG_PC)
-                #     ir3.ref = LiteralIR(0, value=cmse_fn['table_branch_dispatch'])
-                #     ir3.len = 4
-                #     do_instrument(ir, ir3, pos='after')
-                #     # do_instrument(ir3, IndirectBranchIR(reg=i.base_reg.id), pos='after')
-                #     literal_pool_instruments.append(ir3.ref)
-                # elif isinstance(i, LiteralPoolIR):
-                #     for e in literal_pool_instruments:
-                #         i.append_child(e)
-                #     literal_pool_instruments.clear()
                 else:
                     pass
-
-    # if len(literal_pool_instruments) > 0:
-    #     ir = LiteralPoolIR(0)
-    #     for e in literal_pool_instruments:
-    #         ir.append_child(e)
-    #     fn.append_child(ir)
 
     fn.commit()
 
@@ -368,14 +354,7 @@ def PendSV_instrument(fw: FirmwareIR, fn: FunctionIR):
 
     fn.insert_child(first_ir, IR(0, bytearray((b"\x70\x46"))))  # 0: mov r0, lr
     fn.insert_child(first_ir, ir)                               # 2: bl PendSV_Hook0_veneer
-    fn.insert_child(first_ir, IR(0, bytearray(b"\x86\x46")))    # 6: mov lr r0
-
-    # bx_ir = list(filter(lambda x: isinstance(x, IndirectBranchIR) and str(x.reg) == 'lr', [i for i in fn.child_iter()]))
-    # for i in bx_ir:
-    #     ir = BranchIR(0)
-    #     ir.ref = fw.PendSV_Hook1_veneer
-    #     fn.insert_child(i, ir, pos='replace')
-    #     reference_handoff(ir, i)
+    fn.insert_child(first_ir, IR(0, bytearray(b"\x86\x46")))    # 6: mov lr, r0
 
     fn.layout_refresh()
 
@@ -431,7 +410,7 @@ def indirect_branch_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
 
 def indirect_call_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     fn = FunctionIR("indirect_call_veneer", 0)
-    ir = LoadLiteralIR(0, fn)
+    ir = LoadLiteralIR(0, parent=fn)
     ir.reg = ArmReg(ARM_REG_PC)
     ir.len = 4
     ir2 = BlockIR(0)
@@ -457,7 +436,7 @@ def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     ir = IndirectBranchIR(ARM_REG_LR)
     ir.cond = ARM_CC_EQ
     it_block.append_child(ir)
-    ir = LoadLiteralIR(0, fn)
+    ir = LoadLiteralIR(0, parent=fn)
     ir.reg = ArmReg(ARM_REG_PC)
     ir.len = 4
     ir2 = BlockIR(0)
@@ -495,7 +474,7 @@ def fw_instrument(fw, cmse_fn, has_rtos):
                                                           "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
             if has_rtos and fn.name == "PendSV_Handler":
                 PendSV_instrument(fw, fn)
-            fn_instrument(fn, fw, cmse_fn)
+            fn_instrument(fn, fw)
 
 
 def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
