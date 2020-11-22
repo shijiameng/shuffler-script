@@ -116,7 +116,7 @@ class Symbol:
             ir.ref_addr = literal_address - self.address + 1
             ir.len = inst.size
 
-        elif inst.id == ARM_INS_LDR:
+        elif inst.id in (ARM_INS_LDR, ARM_INS_VLDR):
             """
             LDR PC, [Rt, Rn, lsl #2] --> handle jump table
             LDR PC, [SP, #offset] --> handle function return
@@ -145,13 +145,14 @@ class Symbol:
                         self.__literal_pool_limit = self.__literal_pool_base + 4
                     else:
                         self.__literal_pool_limit = max(self.__literal_pool_limit, literal_address + 4)
-
                     ir = LoadLiteralIR(bufp)
+                    ir.float_reg = inst.id == ARM_INS_VLDR
                     ir.len = inst.size
                     ir.reg = ArmReg(inst.operands[0].value.reg)
                     ir.ref_addr = literal_address - self.address + 1
                 else:
                     ir = IR(bufp, inst.bytes)
+
         elif inst.id == ARM_INS_LDRD:
             if inst.operands[2].value.mem.base == self.__jmp_tbl_br:
                 if self.__literal_pool_base == self.UINT32_MAX:

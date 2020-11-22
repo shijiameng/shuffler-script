@@ -12,18 +12,19 @@ class BranchIR(RefIR):
     def __repr__(self):
         if self.link:
             if isinstance(self.ref, FunctionIR):
-                return "%s: call function %s @ %s (%s)" % (hex(self.addr), self.ref.name, hex(self.ref.addr), get_cond_name(self.cond))
+                return "%s: call function %s @ %s" % (hex(self.addr), self.ref.name, hex(self.ref.addr))
             elif self.ref:
-                return "%s: branch and link to address %s (%s)" % (hex(self.addr), hex(self.ref.addr), get_cond_name(self.cond))
+                return "%s: branch and link to address %s" % (hex(self.addr), hex(self.ref.addr))
             else:
-                return "%s: branch and link to address %s (%s)" % (hex(self.addr), hex(self.ref_addr), get_cond_name(self.cond))
+                return "%s: branch and link to address %s" % (hex(self.addr), hex(self.ref_addr))
         else:
             if isinstance(self.ref, FunctionIR):
-                return "%s: branch to function %s @ %s (%s)" % (hex(self.addr), self.ref.name, hex(self.ref.addr), get_cond_name(self.cond))
+                return "%s: branch to function %s @ %s" % (hex(self.addr), self.ref.name, hex(self.ref.addr))
             elif self.ref:
-                return "%s: branch to address %s (%s)" % (hex(self.addr), hex(self.ref.addr), get_cond_name(self.cond))
+                return "%s: branch to address %s (%s+%s)" % (hex(self.addr), hex(self.ref.addr),
+                                                             self.ref.parent.name, hex(self.ref.offset))
             else:
-                return "%s: branch to address %s (%s)" % (hex(self.addr), hex(self.ref_addr), get_cond_name(self.cond))
+                return "%s: branch to address %s" % (hex(self.addr), hex(self.ref_addr))
 
     def __str__(self):
         if len(self.code) > 0:
