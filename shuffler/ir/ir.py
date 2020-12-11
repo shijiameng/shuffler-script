@@ -8,7 +8,7 @@ from copy import deepcopy
 
 class IR:
     _ks = Ks(KS_ARCH_ARM, KS_MODE_THUMB)
-    _md = Cs(CS_ARCH_ARM, CS_MODE_THUMB+CS_MODE_MCLASS)
+    _md = Cs(CS_ARCH_ARM, CS_MODE_THUMB + CS_MODE_MCLASS)
     _md.skipdata_callback = lambda b, s, o, u: 4
     _md.skipdata = True
     _md.detail = True
@@ -17,7 +17,15 @@ class IR:
         self._parent = parent
         self._offset = offset
         if code:
-            self._code = bytearray(code)
+            if isinstance(code, bytearray):
+                self._code = code
+            elif isinstance(code, bytes):
+                self._code = bytearray(code)
+            elif isinstance(code, str):
+                binary, count = IR._ks.asm(code)
+                self._code = bytearray(binary)
+            else:
+                raise IRInvalidCode
         else:
             self._code = bytearray()
         self._cond = ARM_CC_AL
@@ -78,3 +86,7 @@ class IR:
 
     def asm(self):
         pass
+
+
+class IRInvalidCode:
+    pass

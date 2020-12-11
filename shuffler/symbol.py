@@ -1,17 +1,15 @@
-from capstone import *
-
 from .ir.adr import AddressToRegisterIR
 from .ir.branch import BranchIR
 from .ir.cond_branch import CondBranchIR
+from .ir.indirect_branch import *
 from .ir.it_block import ITBlockIR
 from .ir.ldr import LoadLiteralIR
 from .ir.literal import *
 from .ir.load_branch_address import LoadBranchAddressIR
 from .ir.nop import NopIR
+from .ir.pop import *
 from .ir.ret import ReturnIR
 from .ir.table_branch import *
-from .ir.indirect_branch import *
-from .ir.pop import *
 
 
 class Symbol:
@@ -26,6 +24,7 @@ class Symbol:
         self.__literal_pool_limit = self.UINT32_MAX
         self.__name = name
         self.__branch_targets = set()
+        self.__literal_addr = dict()
         self.__jmp_tbl_br = -1
         self.__jmp_tbl_bv = -1  # jump table base address
         self.__jmp_tbl_il = 0  # jump table item length
@@ -39,6 +38,7 @@ class Symbol:
         if len(code) != size:
             print(len(code))
             print(size)
+            print(name)
 
         assert (len(code) == size)
 
@@ -136,15 +136,17 @@ class Symbol:
                     # handle literal pool
                     pc = ((inst.address - 1) + 4) & ~3
                     literal_address = pc + inst.operands[1].value.mem.disp
-                    if self.__literal_pool_base == self.UINT32_MAX:
-                        self.__literal_pool_base = literal_address
-                    else:
-                        self.__literal_pool_base = min(self.__literal_pool_base, literal_address)
+                    if literal_address > inst.address - 1:
+                        if self.__literal_pool_base == self.UINT32_MAX:
+                            self.__literal_pool_base = literal_address
+                        else:
+                            self.__literal_pool_base = min(self.__literal_pool_base, literal_address)
 
-                    if self.__literal_pool_limit == self.UINT32_MAX:
-                        self.__literal_pool_limit = self.__literal_pool_base + 4
-                    else:
-                        self.__literal_pool_limit = max(self.__literal_pool_limit, literal_address + 4)
+                        if self.__literal_pool_limit == self.UINT32_MAX:
+                            self.__literal_pool_limit = self.__literal_pool_base + 4
+                        else:
+                            self.__literal_pool_limit = max(self.__literal_pool_limit, literal_address + 4)
+
                     ir = LoadLiteralIR(bufp)
                     ir.float_reg = inst.id == ARM_INS_VLDR
                     ir.len = inst.size

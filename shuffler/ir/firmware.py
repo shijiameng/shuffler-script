@@ -2,6 +2,7 @@ from .block import BlockIR
 from .branch import BranchIR
 from .function import FunctionIR, NopIR
 from .ir import IR
+from .object import ObjectIR
 
 
 class FirmwareIR(BlockIR):
@@ -20,22 +21,7 @@ class FirmwareIR(BlockIR):
 
     def append_child(self, fn: IR, align=2):
         assert align in (2, 4)
-
-        # if fn.name == "vRestoreContextOfFirstTask":
-        #     print("======")
-        #     print(hex(self.addr + self._pos))
-        # if align == 4 and (self.addr + self._pos) % 4 != 0:
-        #     super().append_child(NopIR(0))
-        #
-        # if fn.name == "vRestoreContextOfFirstTask":
-        #     print("======")
-        #     print(hex(self.addr + self._pos))
-
         super().append_child(fn)
-
-        # if fn.name == "vRestoreContextOfFirstTask":
-        #     print("======!!!")
-        #     print(hex(fn.addr))
 
     def commit(self):
         fn = filter(lambda x: isinstance(x, FunctionIR), self._child)
@@ -52,6 +38,30 @@ class FirmwareIR(BlockIR):
                             print(ir)
                         assert ir.ref
 
+    def layout_refresh(self):
+        pads = list()
+        pad_index = 0
+        total_padding = 0
+        self._pos = self._init_pos
+
+        for ir in self._child:
+            ir.offset = self._pos
+            if isinstance(ir, ObjectIR) and (self._pos + self.addr + total_padding) % ir.align != 0:
+                pad_size = ir.align - ((self._pos + self.addr + total_padding) & (ir.align - 1))
+                pads.append({"ir": ir, "size": pad_size})
+                total_padding += pad_size
+
+                print("%s, pad_size: %d" % (ir, pad_size))
+            else:
+                if hasattr(ir, "layout_refresh"):
+                    ir.layout_refresh()
+
+            self._pos += ir.len
+
+        for pad in pads:
+            self.insert_child(pad["ir"], ObjectIR(name="pad%d" % pad_index, code=b"\xff" * pad["size"], align=1))
+            pad_index += 1
+
     def verify(self):
         pos = 0
         for i in self._child:
@@ -59,8 +69,8 @@ class FirmwareIR(BlockIR):
                 i.verify()
 
             if i.offset != pos:
-                print("%s, offset is incorrect!")
-                assert 1 == 0
+                print("%s, offset is incorrect! (offset=%s, pos=%s, align=%d)" % (i, hex(i.offset), hex(pos), i.align))
+                assert False
             else:
                 pos += i.len
 

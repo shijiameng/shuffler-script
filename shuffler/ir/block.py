@@ -79,8 +79,6 @@ class BlockIR(IR):
             new_ir.offset = self._child[idx].offset
             self.__stretch(idx, new_ir.len)
             self._child.insert(idx, new_ir)
-            # self._len += new_ir.len
-            # self._pos += new_ir.len
         else:
             new_ir.offset = src_ir.offset
             self._child[idx] = new_ir
@@ -88,6 +86,7 @@ class BlockIR(IR):
                 self.__stretch(idx + 1, new_ir.len - src_ir.len)
 
     def layout_refresh(self):
+        orig_size = self._len
         self._child = list(filter(lambda x: not hasattr(x, "void"), self._child))
         self._pos = self._init_pos
         self._len = 0
@@ -97,6 +96,7 @@ class BlockIR(IR):
                 i.layout_refresh()
             self._pos += i.len
             self._len += i.len
+        return self._len - orig_size
 
     def child_iter(self):
         for i in self._child:

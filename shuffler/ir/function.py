@@ -42,12 +42,13 @@ class FunctionIR(BlockIR):
     def layout_refresh(self):
         children = self._child
         finished = False
+        orig_size = self._len
+
         while not finished:
             # remove all NOP IR except those referenced by other IR
             children = list(filter(lambda x: (not isinstance(x, NopIR) or hasattr(x, "ref_by") or
-                                              self.name == "SVC_Handler" or self.name == "vStartFirstTask")
-                                             and not hasattr(x, "void"), children))
-            # children = list(children)
+                                              self.name == "SVC_Handler" or self.name == "vStartFirstTask") and
+                                             not hasattr(x, "void"), children))
             where_nop = list()
             self._pos = 0
             # assign offset for each instruction
@@ -63,7 +64,6 @@ class FunctionIR(BlockIR):
 
             # insert NOP instructions to adjust the layout
             for idx, offset in where_nop:
-                # children.insert(idx, NopIR(offset, parent=self))
                 children.append(NopIR(offset, parent=self))
 
             children.sort(key=lambda x: x.offset)
@@ -83,13 +83,14 @@ class FunctionIR(BlockIR):
         self._child = children
         self._len = self._pos
         self.__update_ir_map()
+        return self._len - orig_size
 
     def verify(self):
         pos = 0
         for i in self._child:
             if i.offset != pos:
                 print("%s ir offset is incorrect!" % i)
-                assert 1==0
+                assert 1 == 0
             else:
                 pos += i.len
         from .branch import BranchIR
@@ -98,7 +99,8 @@ class FunctionIR(BlockIR):
             if isinstance(i, BranchIR) or isinstance(i, CondBranchIR):
                 if i.ref.parent == self:
                     assert i.ref in self._child
-                if i.ref.parent == self and (i.ref.offset not in self.__ir_map or self.__ir_map[i.ref.offset] is not i.ref):
+                if i.ref.parent == self and (
+                        i.ref.offset not in self.__ir_map or self.__ir_map[i.ref.offset] is not i.ref):
                     # assert i.ref in self._child
                     if i.ref.offset in self.__ir_map:
                         print(self.__ir_map[i.ref.offset])
