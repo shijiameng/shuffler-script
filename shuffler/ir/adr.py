@@ -13,15 +13,16 @@ class AddressToRegisterIR(RefIR):
 
     def __repr__(self):
         if self.ref:
-            return "%s: %s = %s (%s)" % (hex(self.addr), self.reg, hex(self.ref.addr), self.ref)
+            return "%s: %s = %s (%s) adr" % (hex(self.addr), self.reg, hex(self.ref.addr), self.ref)
         else:
-            return "%s: %s = %s (%s)" % (hex(self.addr), self.reg, hex(self.ref_addr), self.ref)
+            return "%s: %s = %s (%s) adr" % (hex(self.addr), self.reg, hex(self.ref_addr), self.ref)
 
     def __str__(self):
-        if len(self._code):
-            return super().__str__()
-        else:
-            return self.__repr__()
+        # if len(self._code):
+        #     return super().__str__()
+        # else:
+        #     return self.__repr__()
+        return self.__repr__()
 
     @property
     def reg(self):

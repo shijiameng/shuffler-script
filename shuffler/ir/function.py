@@ -1,14 +1,11 @@
-from copy import deepcopy
-
-from .block import *
 from .it_block import *
 from .nop import *
-from .ref import RefIR, RefError
+from .ref import RefIR
 from .table_branch import BranchTableIR
 
 
 class FunctionIR(BlockIR):
-    def __init__(self, name, offset, parent=None):
+    def __init__(self, name, offset=0, parent=None):
         super().__init__(offset, init_pos=0, parent=parent)
         self.__name = name
         self.__ir_map = dict()
@@ -48,7 +45,7 @@ class FunctionIR(BlockIR):
             # remove all NOP IR except those referenced by other IR
             children = list(filter(lambda x: (not isinstance(x, NopIR) or hasattr(x, "ref_by") or
                                               self.name == "SVC_Handler" or self.name == "vStartFirstTask") and
-                                             not hasattr(x, "void"), children))
+                                             not hasattr(x, "void") and x.parent is self, children))
             where_nop = list()
             self._pos = 0
             # assign offset for each instruction

@@ -3,7 +3,7 @@ from copy import deepcopy
 
 
 class BlockIR(IR):
-    def __init__(self, offset, init_pos=0, parent=None):
+    def __init__(self, offset=0, init_pos=0, parent=None):
         super().__init__(offset, None, parent)
         self._init_pos = init_pos
         self._pos = init_pos

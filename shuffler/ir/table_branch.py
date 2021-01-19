@@ -1,8 +1,61 @@
+from copy import copy
+
+from capstone.arm import *
+from keystone import KsError
+
+from .arm_reg import ArmReg
 from .block import BlockIR
 from .ir import IR
 from .ref import RefIR
 from .utils import tohex
 
+
+class LoadBranchTableIR(RefIR):
+    def __init__(self, top=False, reg=ArmReg(ARM_REG_R0), ref=None, offset=0, parent=None):
+        super().__init__(offset, parent)
+        self._ref = ref
+        self._len = 4
+        self.__reg = reg
+        self.__top = top
+
+    def __repr__(self):
+        if self.__top:
+            return "%s: Load Branch Table High Address (%s)" % (hex(self.addr), hex(self.ref.addr))
+        else:
+            return "%s: Load Branch Table Low Address (%s)" % (hex(self.addr), hex(self.ref.addr))
+
+    def __str__(self):
+        if len(self.code) > 0:
+            return "%s (%s)" % (super().__str__(), self.__repr__())
+        else:
+            return self.__repr__()
+
+    @property
+    def reg(self):
+        return copy(self.__reg)
+
+    @reg.setter
+    def reg(self, v):
+        assert isinstance(v, ArmReg)
+        self.__reg = copy(v)
+
+    def __calc_disp(self):
+        pass
+
+    def reachable(self):
+        return True
+
+    def asm(self):
+        if self.__top:
+            asmcode = "movt %s, %s" % (self.__reg, hex(self.ref.addr >> 16))
+        else:
+            asmcode = "movw %s, %s" % (self.__reg, hex(self.ref.addr & 0xFFFF))
+        try:
+            code, count = IR._ks.asm(asmcode)
+        except KsError:
+            print(asmcode)
+        assert len(code) == self.len
+        self._code = bytearray(code)
 
 class TableBranchIR(IR):
     def __init__(self, offset, code, parent=None):
@@ -36,10 +89,34 @@ class TableBranchIR(IR):
 
 class BranchTableIR(BlockIR):
     entry_size = 4
+    ref_by_load = None
+    ref_by_branch = None
+
+    def __init__(self, entry_size=4, ref_by_load=None, ref_by_branch=None, offset=0, parent=None):
+        super().__init__(offset=offset, parent=parent)
+        self.__entry_size = entry_size
+        self.__ref_by_load = ref_by_load
+        self.__ref_by_branch = ref_by_branch
+
+    @property
+    def ref_by_load(self):
+        return self.__ref_by_load
+
+    @ref_by_load.setter
+    def ref_by_load(self, v):
+        self.__ref_by_load = v
+
+    @property
+    def ref_by_branch(self):
+        return self.__ref_by_branch
+
+    @ref_by_branch.setter
+    def ref_by_branch(self, v):
+        self.__ref_by_branch = v
 
 
 class TableBranchEntryIR(RefIR):
-    def __init__(self, offset, length=4, parent=None):
+    def __init__(self, offset=0, length=4, parent=None):
         super().__init__(offset, parent)
         self.__enforce_offset = False
         self._len = length
@@ -75,12 +152,22 @@ class TableBranchEntryIR(RefIR):
 
     @property
     def value(self):
-        if self.len != 4:
-            return tohex(self.__calc_disp(), 32) >> 1
-        elif self.__enforce_offset:
-            return (self.ref.addr - self.parent.parent.addr) >> 1
+
+        if self.len == 4:
+            if self.__enforce_offset:
+                return tohex(self.ref.addr - (self.parent.ref_by_branch.addr + 8) + 1, 32)
+            else:
+                return self.parent.addr + self.__calc_disp() + 1
         else:
-            return self.parent.addr + self.__calc_disp() + 1
+            return tohex(self.__calc_disp(), 32) >> 1
+
+        # if self.len != 4:
+        #     return tohex(self.__calc_disp(), 32) >> 1
+        # elif self.__enforce_offset:
+        #     # return (self.ref.addr - self.parent.parent.addr) >> 1
+        #     return self.ref.addr - (self.parent.ref_by_branch + 8)
+        # else:
+        #     return self.parent.addr + self.__calc_disp() + 1
 
     def __calc_disp(self):
         return self.ref.addr - self.parent.addr
@@ -100,7 +187,8 @@ class TableBranchEntryIR(RefIR):
             if self.len != 4:
                 target = disp >> 1
             elif self.__enforce_offset:
-                target = self.ref.addr - self.parent.parent.addr
+                target = tohex(self.ref.addr - (self.parent.ref_by_branch.addr + 8) + 1, 32)
+                # target = self.ref.addr - self.parent.parent.addr
             else:
                 target = self.parent.addr + disp + 1
             self._code = bytearray(target.to_bytes(self.len, byteorder='little'))

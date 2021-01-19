@@ -28,7 +28,8 @@ class Symbol:
         self.__jmp_tbl_br = -1
         self.__jmp_tbl_bv = -1  # jump table base address
         self.__jmp_tbl_il = 0  # jump table item length
-
+        self.__jmp_tbl_ref_by_load = None
+        self.__jmp_tbl_ref_by_branch = None
         self.__md = Cs(CS_ARCH_ARM, CS_MODE_THUMB + CS_MODE_MCLASS)
         self.__md.detail = True
 
@@ -64,6 +65,13 @@ class Symbol:
         pos = 0
         ir = BranchTableIR(base)
         ir.entry_size = item_length
+        ir.ref_by_load = self.__jmp_tbl_ref_by_load
+        ir.ref_by_branch = self.__jmp_tbl_ref_by_branch
+        if ir.ref_by_load:
+            ir.ref_by_load.ref = ir
+
+        if ir.ref_by_branch:
+            ir.ref_by_branch.branch_table = ir
 
         while base + pos < limit and base + pos not in self.__branch_targets:
             value = int.from_bytes(jmp_tbl[pos:pos + item_length], byteorder='little')
@@ -72,8 +80,9 @@ class Symbol:
             else:
                 offset = base + (value << 1)
             if offset in range(self.__size):
-                item = TableBranchEntryIR(base, item_length)
+                item = TableBranchEntryIR(length=item_length)
                 item.ref_addr = offset
+                item.enforce_use_offset = item_length == 4
                 if offset > base:
                     limit = min(offset, limit)
                 ir.append_child(item)
@@ -115,6 +124,7 @@ class Symbol:
             ir = AddressToRegisterIR(reg=ArmReg(inst.operands[0].value.reg), offset=bufp)
             ir.ref_addr = literal_address - self.address + 1
             ir.len = inst.size
+            self.__jmp_tbl_ref_by_load = ir
 
         elif inst.id in (ARM_INS_LDR, ARM_INS_VLDR):
             """
@@ -131,6 +141,7 @@ class Symbol:
                         self.__jmp_tbl_il = 4
                     ir = LoadBranchAddressIR(base_reg=ArmReg(inst.operands[1].value.mem.base),
                                              index_reg=ArmReg(inst.operands[1].value.mem.index))
+                    self.__jmp_tbl_ref_by_branch = ir
             else:
                 if inst.operands[1].value.mem.base == ARM_REG_PC:
                     # handle literal pool
@@ -238,6 +249,8 @@ class Symbol:
                     self.__jmp_tbl_br = -1
                     self.__jmp_tbl_bv = -1
                     self.__jmp_tbl_il = 0
+                    self.__jmp_tbl_ref_by_load = None
+                    self.__jmp_tbl_ref_by_branch = None
                     bufp += pos
                     yield ir
                     break

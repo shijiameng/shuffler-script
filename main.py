@@ -1,11 +1,13 @@
 import getopt
 import sys
+from copy import copy
 
 from capstone.arm import *
 from elftools.elf.elffile import ELFFile
 from elftools.elf.enums import ENUM_RELOC_TYPE_ARM
 from elftools.elf.relocation import RelocationSection
 
+from shuffler.ir.adr import AddressToRegisterIR
 from shuffler.ir.arm_reg import ArmReg
 from shuffler.ir.block import BlockIR
 from shuffler.ir.branch import BranchIR
@@ -21,7 +23,7 @@ from shuffler.ir.object import ObjectIR
 from shuffler.ir.pop import PopIR
 from shuffler.ir.ret import ReturnIR
 from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
-from shuffler.ir.table_branch import TableBranchEntryIR
+from shuffler.ir.table_branch import TableBranchEntryIR, BranchTableIR, LoadBranchTableIR
 from shuffler.ir.vector import VectorIR
 from shuffler.symbol import Symbol
 
@@ -476,6 +478,7 @@ def reference_handoff(dst_ir, src_ir):
 
 def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
     report = {}
+    jump_tables = []
 
     if fn.name[0:8] == "__Secure" or fn.name.find("__benchmark") == 0:
         first_ir = None
@@ -490,11 +493,20 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                                     isinstance(x, PopIR) or \
                                     isinstance(x, ReturnIR) or \
                                     isinstance(x, LoadBranchAddressIR) or \
-                                    isinstance(x, LiteralPoolIR)
+                                    isinstance(x, LiteralPoolIR) or \
+                                    isinstance(x, AddressToRegisterIR) or \
+                                    isinstance(x, LoadBranchAddressIR)
         i_point = list()
         for i in fn.child_iter():
-            if isinstance(i, BlockIR):
+            if isinstance(i, BlockIR) and not isinstance(i, BranchTableIR):
                 i_point += list(filter(lambda x: need_instrument(x), [ir for ir in i.child_iter()]))
+            elif isinstance(i, BranchTableIR) and i.ref_by_load:
+                # ir = copy(i)
+                # ir.ref_by_load = i.ref_by_load
+                # ir.ref_by_branch = i.ref_by_branch
+                # i.ref_by_load.ref = ir
+                # setattr(i, "void", True)
+                jump_tables.append(i)
             else:
                 if need_instrument(i):
                     i_point.append(i)
@@ -584,11 +596,22 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                             report["return"] += ir.len - i.len
                         else:
                             report["return"] = ir.len - i.len
+                elif isinstance(i, AddressToRegisterIR):
+                    ir = LoadBranchTableIR(reg=i.reg, ref=i.ref)
+                    if isinstance(i.ref, BranchTableIR):
+                        i.ref.ref_by_load = ir
+                    do_instrument(i, ir, pos='replace')
+                    do_instrument(ir, LoadBranchTableIR(top=True, reg=i.reg, ref=i.ref), pos='after')
+                elif isinstance(i, LoadBranchAddressIR):
+                    i.dest_reg = ArmReg(ARM_REG_R12)
+                    ir = IR(code="add pc, pc, r12")
+                    do_instrument(i, ir, pos='after')
+
                 else:
                     pass
 
     fn.commit()
-    return report
+    return report, jump_tables
 
 
 def pendsv_hook_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
@@ -701,9 +724,13 @@ def indirect_call_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
 
 def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     fn = FunctionIR("return_veneer", 0)
-    fn.append_child(IR(0, b"\x5d\xf8\x04\xeb"))
-    fn.append_child(IR(0, b"\x4f\xea\x1e\x6c"))  # mov r12, lr, lsr #24
-    fn.append_child(IR(0, b"\xbc\xf1\xff\x0f"))  # cmp r12, #0xFF
+    # fn.append_child(IR(0, b"\x5d\xf8\x04\xeb"))
+    # fn.append_child(IR(0, b"\x4f\xea\x1e\x6c"))  # mov r12, lr, lsr #24
+    # fn.append_child(IR(0, b"\xbc\xf1\xff\x0f"))  # cmp r12, #0xFF
+
+    fn.append_child(IR(code="ldr lr, [sp], #4"))
+    fn.append_child(IR(code="mov r12, lr, lsr #24"))
+    fn.append_child(IR(code="cmp r12, #0xFF"))
 
     it_block = ITBlockIR(0)
     it_block.first_cond = ARM_CC_EQ
@@ -750,12 +777,17 @@ def fw_instrument(fw, cmse_fn, has_rtos):
                                                           "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
             if has_rtos and fn.name == "PendSV_Handler":
                 report["PendSV"] = pendsv_instrument(fw, fn)
-            fn_report = fn_instrument(fn, fw)
+            fn_report, jump_tables = fn_instrument(fn, fw)
             for k in fn_report:
                 if k in report:
                     report[k] += fn_report[k]
                 else:
                     report[k] = fn_report[k]
+
+            for i in jump_tables:
+                fw.append_child(i)
+
+    fw.commit()
 
     return report
 
@@ -827,22 +859,23 @@ def output_revise_item(ir, fn, objects):
             ref = ir.ref
             if isinstance(ref, FunctionIR):
                 data = objects.index(ref) << 16
-                rtype = "R_DIRECT_BRANCH"
+                # rtype = "R_DIRECT_BRANCH"
             elif ref.parent is not fn:
                 inner_offset = ref.addr - ref.parent.addr
                 assert inner_offset == inner_offset & 0xFFFF
                 # data = (inner_offset << 16) | (objects.index(ref.parent) & 0xFFFF)
                 data = (objects.index(ref.parent) << 16) | inner_offset
-                rtype = "R_DIRECT_BRANCH"
+                # rtype = "R_DIRECT_BRANCH"
             else:
                 return None
-            return "\t/* %s (in %s) */\n\t{ 0x%04x, %s, 0x%08x },\n" % \
-                   (repr(ir), ir.parent, ir.addr - fn.addr, rtype, data), 1
-        elif isinstance(ir, TableBranchEntryIR) and ir.len == 4:
-            # data = ((ir.ref.addr - fn.addr) << 1) + 1
-            data = ir.ref.addr - fn.addr
-            rtype = "R_TABLE_BRANCH"
-            return "\t/* %s */\n\t{ 0x%04x, %s, 0x%08x },\n" % (repr(ir), ir.addr - fn.addr, rtype, data), 1
+            # return "\t/* %s (in %s) */\n\t{ 0x%04x, %s, 0x%08x },\n" % \
+            return "\t/* %s (in %s) */\n\t{ 0x%04x, 0x%08x },\n" % \
+                   (repr(ir), ir.parent, ir.addr - fn.addr, data), 1
+        # elif isinstance(ir, TableBranchEntryIR) and ir.len == 4:
+        #     # data = ((ir.ref.addr - fn.addr) << 1) + 1
+        #     data = ir.ref.addr - fn.addr
+        #     rtype = "R_TABLE_BRANCH"
+        #     return "\t/* %s */\n\t{ 0x%04x, %s, 0x%08x },\n" % (repr(ir), ir.addr - fn.addr, rtype, data), 1
         else:
             return None
 
@@ -892,12 +925,15 @@ def output_c_syntax(fw, path):
         stream.write("#define SOURCE_OBJECT_LIST_H_\n\n")
         stream.write("/* DO NOT EDIT THIS FILE */\n\n")
         stream.write("__attribute__((section(\".data.$GLOBAL_REGION\")))\n")
-        stream.write("instance_t instanceList[] = {\n")
-        for i in objects:
-            stream.write("\t/* %d - %s */\n" % (objects.index(i), i.name))
-            stream.write("\t{ { 0x%08XUL, 0x%08XUL } },\n" % (i.addr, i.addr))
+        # stream.write("instance_t instanceList[] = {\n")
+        # for i in objects:
+        #     stream.write("\t/* %d - %s */\n" % (objects.index(i), i.name))
+        #     stream.write("\t{ { 0x%08XUL, 0x%08XUL } },\n" % (i.addr, i.addr))
+        #
+        # stream.write("};\n\n")
 
-        stream.write("};\n\n")
+        stream.write("instance_t instanceList[%d];\n\n" % len(objects))
+
         stream.write("const object_t objectList[] = {\n")
         for i in objects:
             stream.write("\t/* %d - %s */\n" % (objects.index(i), i.name))
@@ -912,10 +948,10 @@ def output_c_syntax(fw, path):
             if hasattr(i, "revise_item"):
                 assert i.revise_item["count"] < 0x400000
                 flags |= (i.revise_item["count"] & 0x3FFFFF) << 10
-                stream.write("\t{ &instanceList[%d], &reviseItems[%d], %s, %d },\n" %
-                             (objects.index(i), i.revise_item["start"], hex(flags), i.len))
+                stream.write("\t{ &instanceList[%d], &reviseItems[%d], %s, %s, %d },\n" %
+                             (objects.index(i), i.revise_item["start"], hex(i.addr), hex(flags), i.len))
             else:
-                stream.write("\t{ &instanceList[%d], NULL, %s, %d },\n" % (objects.index(i), hex(flags), i.len))
+                stream.write("\t{ &instanceList[%d], NULL, %s, %s, %d },\n" % (objects.index(i), hex(i.addr), hex(flags), i.len))
 
         stream.write("};\n\n")
         stream.write("#endif /* SOURCE_OBJECT_LIST_H_ */\n")
@@ -1016,13 +1052,17 @@ def main(argv):
         new_fn_total_size = 0
 
         for fn in fw.child_iter():
-            print(fn)
             if isinstance(fn, FunctionIR):
+                print(fn)
                 new_fn_total_size += fn.len
                 if hasattr(fn, "child_iter"):
                     for ir in fn.child_iter():
                         print(ir)
+            elif isinstance(fn, BranchTableIR):
+                print("BranchTable: %s (referred by %s %s)" % (hex(fn.addr), fn.ref_by_load, fn.ref_by_branch))
+                print(fn)
             else:
+                print(fn)
                 print(fn.code)
             print()
 
@@ -1032,63 +1072,6 @@ def main(argv):
         print("Total function size (original): %d" % orig_fn_total_size)
         print("Total function size (new): %d" % new_fn_total_size)
         print(report)
-
-        # fn_symbols, text_end = export_fn_symbols(elf)
-        # fw = FirmwareIR(input_file, entry_point)
-        # orig_fn_total_size = 0
-        #
-        # for s in fn_symbols:
-        #     fn = symbol_translate(s, fw)
-        #     fw.append_child(fn)
-        #     if s.type == "STT_FUNC":
-        #         orig_fn_total_size += s.size
-        #         fw.fn_map[s.address - 1] = dict(symbol=s, ir=fn)
-        #     else:
-        #         fw.fn_map[s.address] = dict(symbol=s, ir=fn)
-        #
-        # data_ir = export_data_section(elf)
-        # fw.append_child(data_ir)
-        # fw.commit()
-        #
-        # report = fw_instrument(fw, cmse_fn, has_rtos)
-        # fw.layout_refresh()
-        #
-        # report["indirect_call_veneer"] = fw.indirect_call_veneer.len
-        # report["return_veneer"] = fw.return_veneer.len
-        # report["indirect_branch_veneer"] = fw.indirect_branch_veneer.len
-        #
-        # if hasattr(fw, "PendSV_Hook0_veneer"):
-        #     report["pendsv_hook_veneer"] = fw.PendSV_Hook0_veneer.len
-        #
-        # fw.verify()
-        # relocate_recursive(fw, fw)
-        # fw.asm()
-        #
-        # print(hex(data_ir.addr))
-        # data_section_relocate(fw, text_end, data_ir.addr)
-        #
-        # new_fn_total_size = 0
-        #
-        # for fn in fw.child_iter():
-        #     print(fn)
-        #     if isinstance(fn, FunctionIR):
-        #         new_fn_total_size += fn.len
-        #         if hasattr(fn, "child_iter"):
-        #             for ir in fn.child_iter():
-        #                 print(ir)
-        #     else:
-        #         print(fn.code)
-        #     print()
-        #
-        # fw.save_as_file(output_file)
-        # print("New firmware length: %d (%d)" % (fw.len, len(fw.code)))
-        #
-        # output_c_syntax(fw, output_path)
-        #
-        # print("Total function size (original): %d" % orig_fn_total_size)
-        # print("Total function size (new): %d" % new_fn_total_size)
-        # print(report)
-
 
 if __name__ == '__main__':
     main(sys.argv[1:])

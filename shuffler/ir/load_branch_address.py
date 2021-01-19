@@ -3,6 +3,7 @@ from keystone import KsError
 
 from .arm_reg import ArmReg
 from .ir import IR
+from .table_branch import BranchTableIR
 
 
 class LoadBranchAddressIR(IR):
@@ -11,6 +12,7 @@ class LoadBranchAddressIR(IR):
         self.__dest_reg = ArmReg(ARM_REG_PC)
         self.__base_reg = base_reg
         self.__index_reg = index_reg
+        self.__branch_table = None
 
     @property
     def dest_reg(self):
@@ -42,6 +44,15 @@ class LoadBranchAddressIR(IR):
     @property
     def len(self):
         return 4
+
+    @property
+    def branch_table(self):
+        return self.__branch_table
+
+    @branch_table.setter
+    def branch_table(self, v):
+        assert isinstance(v, BranchTableIR)
+        self.__branch_table = v
 
     def asm(self):
         asmcode = "ldr %s, [%s, %s, lsl #2]" % (self.dest_reg, self.base_reg, self.index_reg)
