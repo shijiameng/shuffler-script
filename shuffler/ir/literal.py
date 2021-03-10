@@ -9,7 +9,11 @@ class LiteralPoolIR(BlockIR):
 class LiteralIR(IR):
     def __init__(self, offset, value=0xFFFFFFFF, parent=None):
         super().__init__(offset, None, parent)
-        self._code = bytearray(value.to_bytes(4, byteorder='little'))
+        assert isinstance(value, int)
+        if value <= 0xFFFFFFFF:
+            self._code = bytearray(value.to_bytes(4, byteorder='little'))
+        else:
+            self._code = bytearray(value.to_bytes(8, byteorder='little'))
 
     @property
     def value(self):
@@ -18,10 +22,19 @@ class LiteralIR(IR):
     @value.setter
     def value(self, v):
         assert isinstance(v, int)
-        self._code = bytearray(v.to_bytes(4, byteorder='little'))
+        if v <= 0xFFFFFFFF:
+            self._code = bytearray(v.to_bytes(4, byteorder='little'))
+        else:
+            self._code = bytearray(v.to_bytes(8, byteorder='little'))
 
     def __str__(self):
         if not hasattr(self, "reloc"):
-            return "%s: %08x .word 0x%08x" % (hex(self.addr), self.value, self.value)
+            if self.value <= 0xFFFFFFFF:
+                return "%s: %08x .word 0x%08x" % (hex(self.addr), self.value, self.value)
+            else:
+                return "%s: %08x .word 0x%08x\n" \
+                       "%s: %08x .word 0x%08x" % (hex(self.addr),
+                                                  self.value & 0xFFFFFFFF, self.value & 0xFFFFFFFF,
+                                                  hex(self.addr + 4), self.value >> 32, self.value >> 32)
         else:
             return "%s: %08x .word 0x%08x (RELOC: %s)" % (hex(self.addr), self.value, self.value, self.reloc["type"])

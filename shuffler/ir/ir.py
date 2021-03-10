@@ -82,7 +82,7 @@ class IR:
 
     @property
     def wide(self):
-        return len(self._code) == 4
+        return len(self._code) > 2
 
     def asm(self):
         pass

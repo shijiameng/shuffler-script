@@ -53,6 +53,7 @@ class FunctionIR(BlockIR):
                 i.offset = self._pos
                 if isinstance(i, BlockIR) and not isinstance(i, ITBlockIR) and \
                         (not isinstance(i, BranchTableIR) or i.entry_size == 4) and i.addr % 4 != 0:
+                    i.layout_refresh()
                     # Align literal pool to 4 bytes
                     where_nop.append((children.index(i), self._pos))
                     self._pos += 2

@@ -87,7 +87,7 @@ class BlockIR(IR):
 
     def layout_refresh(self):
         orig_size = self._len
-        self._child = list(filter(lambda x: not hasattr(x, "void"), self._child))
+        self._child = list(filter(lambda x: not hasattr(x, "void") and x.parent is self, self._child))
         self._pos = self._init_pos
         self._len = 0
         for i in self._child:

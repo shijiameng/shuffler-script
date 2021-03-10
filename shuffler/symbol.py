@@ -32,7 +32,6 @@ class Symbol:
         self.__jmp_tbl_ref_by_branch = None
         self.__md = Cs(CS_ARCH_ARM, CS_MODE_THUMB + CS_MODE_MCLASS)
         self.__md.detail = True
-
         self.__md.skipdata_callback = lambda b, s, o, u: 4
         self.__md.skipdata = True
 
@@ -109,6 +108,17 @@ class Symbol:
             pos += 4
 
         self.__literal_pool_base = self.__literal_pool_limit = self.UINT32_MAX
+        # while base + pos + self.address - 1 in self.__literal_addr:
+        #     size = self.__literal_addr[base + pos + self.address - 1]
+        #     value = int.from_bytes(literal_pool[pos:pos + size], byteorder='little')
+        #     print(hex(value))
+        #     item = LiteralIR(pos, value=value)
+        #     ir.append_child(item)
+        #     addr = self.__address + base + pos - 1
+        #     if addr in self.reloc:
+        #         # need to be relocated
+        #         setattr(item, "reloc", self.reloc[addr])
+        #     pos += size
 
         return pos, ir
 
@@ -158,6 +168,10 @@ class Symbol:
                         else:
                             self.__literal_pool_limit = max(self.__literal_pool_limit, literal_address + 4)
 
+                    if literal_address not in self.__literal_addr:
+                        self.__literal_addr[literal_address] = 4
+                        print("{}:{}".format(self.__name, self.__literal_addr))
+
                     ir = LoadLiteralIR(bufp)
                     ir.float_reg = inst.id == ARM_INS_VLDR
                     ir.len = inst.size
@@ -177,6 +191,9 @@ class Symbol:
                     self.__literal_pool_limit = self.__literal_pool_base + 8
                 else:
                     self.__literal_pool_limit = max(self.__literal_pool_limit, self.__jmp_tbl_bv + 8)
+
+                if self.__jmp_tbl_bv not in self.__literal_addr:
+                    self.__literal_addr[self.__jmp_tbl_bv] = 8
 
                 self.__jmp_tbl_br = self.__jmp_tbl_bv = -1
             ir = IR(bufp, inst.bytes)
@@ -244,18 +261,24 @@ class Symbol:
             address = self.__address + bufp
             it_block = None
             for inst in self.__md.disasm(buffer, address):
-                if inst.address - 1 == self.__jmp_tbl_bv:
-                    pos, ir = self.__handle_jump_table(bufp, self.__jmp_tbl_il)
-                    self.__jmp_tbl_br = -1
-                    self.__jmp_tbl_bv = -1
-                    self.__jmp_tbl_il = 0
-                    self.__jmp_tbl_ref_by_load = None
-                    self.__jmp_tbl_ref_by_branch = None
+                # if inst.address - 1 == self.__jmp_tbl_bv:
+                #     pos, ir = self.__handle_jump_table(bufp, self.__jmp_tbl_il)
+                #     self.__jmp_tbl_br = -1
+                #     self.__jmp_tbl_bv = -1
+                #     self.__jmp_tbl_il = 0
+                #     self.__jmp_tbl_ref_by_load = None
+                #     self.__jmp_tbl_ref_by_branch = None
+                #     bufp += pos
+                #     yield ir
+                #     break
+
+                if inst.address - 1 == self.__literal_pool_base:
+                    pos, ir = self.__handle_literal_pool(bufp)
                     bufp += pos
                     yield ir
                     break
 
-                if inst.address - 1 == self.__literal_pool_base:
+                if inst.address - 1 in self.__literal_addr:
                     pos, ir = self.__handle_literal_pool(bufp)
                     bufp += pos
                     yield ir

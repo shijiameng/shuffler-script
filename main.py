@@ -447,6 +447,7 @@ def reference_handoff(dst_ir, src_ir):
 def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
     report = {}
     jump_tables = []
+    abs_literals = LiteralPoolIR()
 
     if fn.name[0:8] == "__Secure" or fn.name.find("__benchmark") == 0:
         first_ir = None
@@ -465,10 +466,14 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                                     isinstance(x, LoadBranchAddressIR)
         i_point = list()
         for i in fn.child_iter():
-            if isinstance(i, BlockIR) and not isinstance(i, BranchTableIR):
+            if isinstance(i, BlockIR) and not (isinstance(i, BranchTableIR) or isinstance(i, LiteralPoolIR)):
                 i_point += list(filter(lambda x: need_instrument(x), [ir for ir in i.child_iter()]))
             elif isinstance(i, BranchTableIR) and i.ref_by_load:
                 jump_tables.append(i)
+            elif isinstance(i, LiteralPoolIR):
+                for literal in i.child_iter():
+                    if literal.len == 8:
+                        abs_literals.append_child(literal)
             else:
                 if need_instrument(i):
                     i_point.append(i)
@@ -573,7 +578,7 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                     pass
 
     fn.commit()
-    return report, jump_tables
+    return report, jump_tables, abs_literals
 
 
 def pendsv_hook_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
@@ -736,7 +741,7 @@ def fw_instrument(fw, cmse_fn, has_rtos):
                                                           "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
             if has_rtos and fn.name == "PendSV_Handler":
                 report["PendSV"] = pendsv_instrument(fw, fn)
-            fn_report, jump_tables = fn_instrument(fn, fw)
+            fn_report, jump_tables, abs_literals = fn_instrument(fn, fw)
             for k in fn_report:
                 if k in report:
                     report[k] += fn_report[k]
@@ -745,6 +750,9 @@ def fw_instrument(fw, cmse_fn, has_rtos):
 
             for i in jump_tables:
                 fw.append_child(i)
+
+            if abs_literals.size > 0:
+                fw.append_child(abs_literals)
 
     fw.commit()
 
