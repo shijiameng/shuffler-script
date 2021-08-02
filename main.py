@@ -1,6 +1,5 @@
 import getopt
 import sys
-from copy import copy
 
 from capstone.arm import *
 from elftools.elf.elffile import ELFFile
@@ -23,8 +22,9 @@ from shuffler.ir.object import ObjectIR
 from shuffler.ir.pop import PopIR
 from shuffler.ir.ret import ReturnIR
 from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
-from shuffler.ir.table_branch import TableBranchEntryIR, BranchTableIR, LoadBranchTableIR
+from shuffler.ir.table_branch import BranchTableIR, LoadBranchTableIR
 from shuffler.ir.vector import VectorIR
+from shuffler.ir.wfi import WfiIR
 from shuffler.symbol import Symbol
 
 
@@ -302,6 +302,8 @@ def export_fn_symbols(elf):
         st_value = s['st_value'] & ~1 if s['st_info']['type'] == 'STT_FUNC' else s['st_value']
         st_size = s['st_size']
 
+        print(s.name)
+
         if prev_symbol and s['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
                 prev_symbol['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
                 (s['st_value'] in text_range and prev_symbol['st_value'] in text_range or s['st_value'] in data_range \
@@ -354,6 +356,9 @@ def export_fn_symbols(elf):
             st_type = 'STT_OBJECT'
         else:
             st_type = s['st_info']['type']
+
+        if (strtab.get_string(s['st_name']) == '__sys_write'):
+            assert False
 
         sym = Symbol(st_value, st_size, fn_code, strtab.get_string(s['st_name']))
         setattr(sym, "type", st_type)
@@ -463,7 +468,8 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                                     isinstance(x, LoadBranchAddressIR) or \
                                     isinstance(x, LiteralPoolIR) or \
                                     isinstance(x, AddressToRegisterIR) or \
-                                    isinstance(x, LoadBranchAddressIR)
+                                    isinstance(x, LoadBranchAddressIR) or \
+                                    isinstance(x, WfiIR)
         i_point = list()
         for i in fn.child_iter():
             if isinstance(i, BlockIR) and not (isinstance(i, BranchTableIR) or isinstance(i, LiteralPoolIR)):
@@ -573,7 +579,30 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
                     i.dest_reg = i.base_reg
                     ir = IR(code="add pc, %s" % str(i.dest_reg))
                     do_instrument(i, ir, pos='after')
+                elif isinstance(i, WfiIR):
 
+                    ir = BranchIR(0)
+                    ir.len = 4
+                    ir.ref = fw.wfi_veneer
+                    do_instrument(i, ir, pos='replace')
+
+                    ir2 = LoadReturnIndexIR(objects.index(fn), parent=fn)
+                    do_instrument(ir, ir2)
+
+                    do_instrument(ir2, IR(0, "mov r12, lr"))
+                    do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
+
+                    # do_instrument(ir, IR(0, "mov r12, lr"))
+                    # do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
+                    #
+                    #
+                    #
+                    # do_instrument(i, IR(0, "mov r12, lr"))
+                    # do_instrument(i, IR(0, "mov lr, r12"), pos='after')
+                    # ir = BranchIR(0, link=True)
+                    # ir.len = 4
+                    # ir.ref = fw.wfi_veneer
+                    # do_instrument(i, ir, pos='replace')
                 else:
                     pass
 
@@ -721,6 +750,23 @@ def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
     return fn.len
 
 
+def wfi_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
+    fn = FunctionIR("wfi_veneer", 0)
+    ir = LoadLiteralIR(0, parent=fn)
+    ir.reg = ArmReg(ARM_REG_PC)
+    ir.len = 4
+    ir2 = BlockIR(0)
+    ir2.append_child(LiteralIR(0, value=cmse_fn["enter_low_power_mode"]))
+    ir.ref = ir2
+    fn.append_child(ir)
+    fn.append_child(ir2)
+    fw.insert_child(src, fn, pos='after')
+    stretched_size = fn.layout_refresh()
+    fw.stretch(fn, stretched_size)
+    setattr(fw, "wfi_veneer", fn)
+
+    return fn.len
+
 def fw_instrument(fw, cmse_fn, has_rtos):
     fn_objs = list(filter(lambda x: isinstance(x, FunctionIR), [o for o in fw.child_iter()]))
 
@@ -728,6 +774,7 @@ def fw_instrument(fw, cmse_fn, has_rtos):
     indirect_branch_veneer_instrument(fw, fn_objs[-1], cmse_fn)
     indirect_call_veneer_instrument(fw, fn_objs[-1], cmse_fn)
     return_veneer_instrument(fw, fn_objs[-1], cmse_fn)
+    wfi_veneer_instrument(fw, fn_objs[-1], cmse_fn)
 
     report = {}
     if has_rtos:
@@ -760,6 +807,7 @@ def fw_instrument(fw, cmse_fn, has_rtos):
 
 
 def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
+    func_ptr_tbl_sz = 0
     objects = list(filter(lambda x: isinstance(x, VectorIR) or isinstance(x, FunctionIR), [o for o in fw.child_iter()]))
     if isinstance(ir, LiteralIR):
         value = ir.value
@@ -778,6 +826,7 @@ def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
             # Encode function pointer as the shuffleable form
             assert objects.index(fw.fn_map[value - 1]["ir"]) <= 0xFFFF
             new_value = ((0x1000 | objects.index(fw.fn_map[value - 1]["ir"])) << 16) + 1
+            func_ptr_tbl_sz += 4
     else:
         if value not in fw.fn_map:
             for k in fw.fn_map:
@@ -796,19 +845,23 @@ def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
         code[offset:offset + 4] = bytearray(new_value.to_bytes(4, byteorder="little"))
         ir.code = code
 
+    return func_ptr_tbl_sz
+
 
 def relocate_recursive(fw: FirmwareIR, ir: IR):
+    func_ptr_tbl_sz = 0
     if hasattr(ir, "child_iter"):
         for i in ir.child_iter():
-            relocate_recursive(fw, i)
+            func_ptr_tbl_sz += relocate_recursive(fw, i)
     else:
         if hasattr(ir, "reloc"):
-            do_relocate(fw, ir, ir.reloc)
+            func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc)
         elif hasattr(ir, "reloc_map"):
             for k in ir.reloc_map:
-                do_relocate(fw, ir, ir.reloc_map[k], offset=k)
+                func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc_map[k], offset=k)
         else:
             pass
+    return func_ptr_tbl_sz
 
 
 def output_revise_item(ir, fn, objects):
@@ -859,6 +912,8 @@ def output_c_syntax(fw, path):
     objects = list(filter(lambda x: isinstance(x, FunctionIR) or isinstance(x, VectorIR),
                           [o for o in fw.child_iter()]))
 
+    rev_tb_sz = 0
+
     # export revise list in C syntax
     with open(path + "/revise_list.h", "w") as stream:
         stream.write("#ifndef SOURCE_REVISE_LIST_H_\n")
@@ -873,12 +928,16 @@ def output_c_syntax(fw, path):
                     revise_item = output_revise_item(ir, fn, objects)
                     if revise_item:
                         stream.write(revise_item[0])
+                        rev_tb_sz += 6
                         count += revise_item[1]
                 if count > 0:
                     setattr(fn, "revise_item", dict(start=start, count=count))
                     start += count
         stream.write("};\n\n")
         stream.write("#endif /* SOURCE_REVISE_LIST_H_ */\n")
+
+    print("Revise Table Size: %d bytes." % rev_tb_sz)
+    func_tbl_sz = 0
 
     # export object list in C syntax
     with open(path + "/object_list.h", "w") as stream:
@@ -893,6 +952,7 @@ def output_c_syntax(fw, path):
             stream.write("\t/* %d - %s */\n" % (objects.index(i), i.name))
             flags = 0
             if isinstance(i, FunctionIR):
+                func_tbl_sz += 14
                 if i.isr:
                     flags |= 1 << 1
                     flags |= (i.irq & 0xFF) << 2
@@ -910,17 +970,38 @@ def output_c_syntax(fw, path):
         stream.write("};\n\n")
         stream.write("#endif /* SOURCE_OBJECT_LIST_H_ */\n")
 
+    print("Function Table Size: %d bytes" % func_tbl_sz)
+
+    ret_tbl_sz = 0
+    ret_offset_tbl_sz = 0
+
     with open(path + "/branch_list.h", "w") as stream:
         stream.write("#ifndef SOURCE_BRANCH_LIST_H_\n")
         stream.write("#define SOURCE_BRANCH_LIST_H_\n\n")
         stream.write("/* DO NOT EDIT THIS FILE */\n\n")
-        stream.write("const branch_t branchList[] = {\n")
+        stream.write("const callsite_t branchList[] = {\n")
         for fn in objects[1:]:
             for ir in fn.child_iter():
                 if isinstance(ir, LoadReturnIndexIR):
                     stream.write("\t{ 0x%08XUL },\n" % ir.encode)
+                    ret_tbl_sz += 4
+                    ret_offset_tbl_sz += 4
         stream.write("};\n\n")
         stream.write("#endif /* SOURCE_BRANCH_LIST_H_ */\n")
+
+    print("Return Address Dispatch Table Size: %d bytes" % ret_tbl_sz)
+
+    indirect_branch_tbl = 0
+
+    for fn in objects[1:]:
+        for ir in fn.child_iter():
+            if isinstance(ir, LoadFuncPtrIR):
+                indirect_branch_tbl += 4
+
+    print("Indirect Call Table Size: %d bytes" % indirect_branch_tbl)
+
+
+
 
 
 def main(argv):
@@ -997,18 +1078,20 @@ def main(argv):
             report["pendsv_hook_veneer"] = fw.PendSV_Hook0_veneer.len
 
         fw.verify()
-        relocate_recursive(fw, fw)
+        func_ptr_tbl_sz = relocate_recursive(fw, fw)
         fw.asm()
 
         if first_data_ir:
             data_section_relocate(fw, etext, first_data_ir.addr)
 
         new_fn_total_size = 0
+        fn_total = 0
 
         for fn in fw.child_iter():
             if isinstance(fn, FunctionIR):
                 print(fn)
                 new_fn_total_size += fn.len
+                fn_total += 1
                 if hasattr(fn, "child_iter"):
                     for ir in fn.child_iter():
                         print(ir)
@@ -1023,9 +1106,11 @@ def main(argv):
         fw.save_as_file(output_file)
         print("New firmware length: %d (%d) bytes" % (fw.len, len(fw.code)))
         output_c_syntax(fw, output_path)
+        print("Function pointer table size: %d" % func_ptr_tbl_sz)
         print("Total function size (original): %d" % orig_fn_total_size)
         print("Total function size (new): %d" % new_fn_total_size)
         print(report)
+        print("Total %d functions" % fn_total)
 
 if __name__ == '__main__':
     main(sys.argv[1:])

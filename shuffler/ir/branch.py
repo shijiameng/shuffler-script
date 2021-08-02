@@ -5,9 +5,9 @@ from .utils import *
 
 
 class BranchIR(RefIR):
-    def __init__(self, offset, parent=None):
+    def __init__(self, offset, link=False, parent=None):
         super().__init__(offset, parent)
-        self.__link = False
+        self.__link = link
 
     def __repr__(self):
         if self.link:

@@ -10,6 +10,7 @@ from .ir.nop import NopIR
 from .ir.pop import *
 from .ir.ret import ReturnIR
 from .ir.table_branch import *
+from .ir.wfi import WfiIR
 
 
 class Symbol:
@@ -240,6 +241,9 @@ class Symbol:
             ir = PopIR(bufp)
             ir.reg_list = {o.value.reg for o in inst.operands}
 
+        elif inst.id == ARM_INS_WFI:
+            ir = WfiIR(bufp)
+
         else:
             ir = IR(bufp, inst.bytes)
 
@@ -261,16 +265,16 @@ class Symbol:
             address = self.__address + bufp
             it_block = None
             for inst in self.__md.disasm(buffer, address):
-                # if inst.address - 1 == self.__jmp_tbl_bv:
-                #     pos, ir = self.__handle_jump_table(bufp, self.__jmp_tbl_il)
-                #     self.__jmp_tbl_br = -1
-                #     self.__jmp_tbl_bv = -1
-                #     self.__jmp_tbl_il = 0
-                #     self.__jmp_tbl_ref_by_load = None
-                #     self.__jmp_tbl_ref_by_branch = None
-                #     bufp += pos
-                #     yield ir
-                #     break
+                if inst.address - 1 == self.__jmp_tbl_bv:
+                    pos, ir = self.__handle_jump_table(bufp, self.__jmp_tbl_il)
+                    self.__jmp_tbl_br = -1
+                    self.__jmp_tbl_bv = -1
+                    self.__jmp_tbl_il = 0
+                    self.__jmp_tbl_ref_by_load = None
+                    self.__jmp_tbl_ref_by_branch = None
+                    bufp += pos
+                    yield ir
+                    break
 
                 if inst.address - 1 == self.__literal_pool_base:
                     pos, ir = self.__handle_literal_pool(bufp)
@@ -278,11 +282,11 @@ class Symbol:
                     yield ir
                     break
 
-                if inst.address - 1 in self.__literal_addr:
-                    pos, ir = self.__handle_literal_pool(bufp)
-                    bufp += pos
-                    yield ir
-                    break
+                # if inst.address - 1 in self.__literal_addr:
+                #     pos, ir = self.__handle_literal_pool(bufp)
+                #     bufp += pos
+                #     yield ir
+                #     break
 
                 pos, ir = self.__inst_analyze(bufp, inst)
                 bufp += pos
