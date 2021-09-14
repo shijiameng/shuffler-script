@@ -115,14 +115,6 @@ class FunctionIR(BlockIR):
         if isinstance(ir, BlockIR):
             for i in ir.child_iter():
                 self.__ir_map[ir.offset + i.offset] = i
-        # for k in self.__ir_map:
-        #     i = self.__ir_map[k]
-        #     if isinstance(i, RefIR) and not i.ref and i.ref_addr in self.__ir_map:
-        #         i.ref = self.__ir_map[i.ref_addr]
-
-    # def insert_child(self, src_ir, new_ir, pos='before'):
-    #     super().insert_child(src_ir, new_ir, pos)
-    #     self.__update_ir_map()
 
     def __commit(self, ir):
         if isinstance(ir, BlockIR):

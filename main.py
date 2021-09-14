@@ -591,18 +591,6 @@ def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
 
                     do_instrument(ir2, IR(0, "mov r12, lr"))
                     do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
-
-                    # do_instrument(ir, IR(0, "mov r12, lr"))
-                    # do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
-                    #
-                    #
-                    #
-                    # do_instrument(i, IR(0, "mov r12, lr"))
-                    # do_instrument(i, IR(0, "mov lr, r12"), pos='after')
-                    # ir = BranchIR(0, link=True)
-                    # ir.len = 4
-                    # ir.ref = fw.wfi_veneer
-                    # do_instrument(i, ir, pos='replace')
                 else:
                     pass
 
