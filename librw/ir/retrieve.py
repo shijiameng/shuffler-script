@@ -1,4 +1,4 @@
-from shuffler.ir.ir import IR
+from librw.ir.ir import IR
 
 
 class RetrieveIR(IR):

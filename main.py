@@ -4,17 +4,17 @@ import sys
 from elftools.elf.elffile import ELFFile
 
 from elf_parser import export_cmse_fn, export_symbols
-from shuffler.ir.branch import BranchIR
-from shuffler.ir.firmware import FirmwareIR
-from shuffler.ir.function import FunctionIR
-from shuffler.ir.ir import IR
-from shuffler.ir.literal import LiteralIR
-from shuffler.ir.object import ObjectIR
-from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
-from shuffler.ir.table_branch import BranchTableIR
-from shuffler.ir.vector import VectorIR
-from shuffler.rw import fw_instrument
-from shuffler.symbol import Symbol
+from librw.ir.branch import BranchIR
+from librw.ir.firmware import FirmwareIR
+from librw.ir.function import FunctionIR
+from librw.ir.ir import IR
+from librw.ir.literal import LiteralIR
+from librw.ir.object import ObjectIR
+from librw.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
+from librw.ir.table_branch import BranchTableIR
+from librw.ir.vector import VectorIR
+from librw.rw import fw_instrument
+from librw.symbol import Symbol
 
 
 def symbol_translate(s, fw: FirmwareIR):

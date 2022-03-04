@@ -1,7 +1,7 @@
 from elftools.elf.enums import ENUM_RELOC_TYPE_ARM
 from elftools.elf.relocation import RelocationSection
 
-from shuffler.symbol import Symbol
+from librw.symbol import Symbol
 
 
 def export_cmse_fn(elf):

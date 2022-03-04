@@ -2,7 +2,7 @@ from capstone.arm import *
 from capstone import *
 from keystone import *
 
-from shuffler.ir.utils import get_cond_name
+from librw.ir.utils import get_cond_name
 from copy import deepcopy
 
 

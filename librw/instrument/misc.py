@@ -1,9 +1,9 @@
-from shuffler.ir.arm_reg import ArmReg
-from shuffler.ir.block import BlockIR
-from shuffler.ir.firmware import FirmwareIR
-from shuffler.ir.function import FunctionIR
-from shuffler.ir.ldr import LoadLiteralIR
-from shuffler.ir.literal import LiteralIR
+from librw.ir.arm_reg import ArmReg
+from librw.ir.block import BlockIR
+from librw.ir.firmware import FirmwareIR
+from librw.ir.function import FunctionIR
+from librw.ir.ldr import LoadLiteralIR
+from librw.ir.literal import LiteralIR
 
 from capstone.arm import *
 

@@ -1,24 +1,24 @@
 from capstone.arm import *
 
-from shuffler.instrument.control_flow import *
-from shuffler.instrument.interrupt import pendsv_hook_veneer_instrument, pendsv_instrument
-from shuffler.instrument.misc import wfi_veneer_instrument
-from shuffler.ir.adr import AddressToRegisterIR
-from shuffler.ir.block import BlockIR
-from shuffler.ir.branch import BranchIR
-from shuffler.ir.firmware import FirmwareIR
-from shuffler.ir.function import FunctionIR
-from shuffler.ir.indirect_branch import IndirectBranchIR
-from shuffler.ir.ir import IR
-from shuffler.ir.it_block import ITBlockIR
-from shuffler.ir.literal import LiteralPoolIR
-from shuffler.ir.load_branch_address import LoadBranchAddressIR
-from shuffler.ir.pop import PopIR
-from shuffler.ir.ret import ReturnIR
-from shuffler.ir.ret_encode import LoadReturnIndexIR, LoadFuncPtrIR
-from shuffler.ir.table_branch import BranchTableIR, LoadBranchTableIR
-from shuffler.ir.vector import VectorIR
-from shuffler.ir.wfi import WfiIR
+from librw.instrument.control_flow import *
+from librw.instrument.interrupt import pendsv_hook_veneer_instrument, pendsv_instrument
+from librw.instrument.misc import wfi_veneer_instrument
+from librw.ir.adr import AddressToRegisterIR
+from librw.ir.block import BlockIR
+from librw.ir.branch import BranchIR
+from librw.ir.firmware import FirmwareIR
+from librw.ir.function import FunctionIR
+from librw.ir.indirect_branch import IndirectBranchIR
+from librw.ir.ir import IR
+from librw.ir.it_block import ITBlockIR
+from librw.ir.literal import LiteralPoolIR
+from librw.ir.load_branch_address import LoadBranchAddressIR
+from librw.ir.pop import PopIR
+from librw.ir.ret import ReturnIR
+from librw.ir.ret_encode import LoadReturnIndexIR, LoadFuncPtrIR
+from librw.ir.table_branch import BranchTableIR, LoadBranchTableIR
+from librw.ir.vector import VectorIR
+from librw.ir.wfi import WfiIR
 
 
 def do_instrument(src_ir, new_ir, pos='before'):
