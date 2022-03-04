@@ -96,6 +96,9 @@ class FunctionIR(BlockIR):
         for i in self._child:
             if isinstance(i, BranchIR) or isinstance(i, CondBranchIR):
                 if i.ref.parent == self:
+                    if i.ref not in self._child:
+                        print(i)
+                        print(i.ref)
                     assert i.ref in self._child
                 if i.ref.parent == self and (
                         i.ref.offset not in self.__ir_map or self.__ir_map[i.ref.offset] is not i.ref):

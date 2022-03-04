@@ -1,390 +1,26 @@
 import getopt
 import sys
 
-from capstone.arm import *
 from elftools.elf.elffile import ELFFile
-from elftools.elf.enums import ENUM_RELOC_TYPE_ARM
-from elftools.elf.relocation import RelocationSection
 
-from shuffler.ir.adr import AddressToRegisterIR
-from shuffler.ir.arm_reg import ArmReg
-from shuffler.ir.block import BlockIR
+from elf_parser import export_cmse_fn, export_symbols
 from shuffler.ir.branch import BranchIR
 from shuffler.ir.firmware import FirmwareIR
 from shuffler.ir.function import FunctionIR
-from shuffler.ir.indirect_branch import IndirectBranchIR
 from shuffler.ir.ir import IR
-from shuffler.ir.it_block import ITBlockIR
-from shuffler.ir.ldr import LoadLiteralIR
-from shuffler.ir.literal import LiteralIR, LiteralPoolIR
-from shuffler.ir.load_branch_address import LoadBranchAddressIR
+from shuffler.ir.literal import LiteralIR
 from shuffler.ir.object import ObjectIR
-from shuffler.ir.pop import PopIR
-from shuffler.ir.ret import ReturnIR
 from shuffler.ir.ret_encode import LoadFuncPtrIR, LoadReturnIndexIR
-from shuffler.ir.table_branch import BranchTableIR, LoadBranchTableIR
+from shuffler.ir.table_branch import BranchTableIR
 from shuffler.ir.vector import VectorIR
-from shuffler.ir.wfi import WfiIR
+from shuffler.rw import fw_instrument
 from shuffler.symbol import Symbol
-
-
-def export_cmse_fn(elf):
-    symtab = elf.get_section_by_name(".symtab")
-    if not symtab:
-        raise Exception("No symbol table found")
-
-    cmse_fn = dict()
-    for s in symtab.iter_symbols():
-        if s['st_info']['type'] == "STT_FUNC":
-            cmse_fn[s.name] = s['st_value']
-
-    return cmse_fn
-
-
-def export_data_section(symtab, base, code):
-    # data = elf.get_section_by_name(".data")
-    # if not data:
-    #     return None
-
-    # code = data.data()
-    data_base = base
-    data_range = range(data_base, data_base + len(code))
-    raw_symbols = list(filter(lambda x: x['st_value'] in data_range and x['st_info']['type'] == 'STT_OBJECT',
-                              [s for s in symtab.iter_symbols()]))
-    raw_symbols.sort(key=lambda x: x['st_value'])
-
-    prev_symbol = None
-    gap_cnt = 0
-    data_symbols = list()
-
-    for rs in raw_symbols:
-        st_value = rs['st_value']
-        st_size = rs['st_size']
-        if prev_symbol:
-            prev_st_value = prev_symbol['st_value']
-            prev_st_size = prev_symbol['st_size']
-            if st_value - prev_st_value != prev_st_size:
-                gap_size = st_value - prev_st_value - prev_st_size
-                gap_addr = prev_st_value + prev_st_size
-                start = gap_addr - data_base
-                end = start + gap_size
-                sym = Symbol(gap_addr, gap_size, code[start:end], "data.gap%d" % gap_cnt)
-                setattr(sym, "type", "STT_OBJECT")
-                setattr(sym, "anonymous", True)
-                data_symbols.append(sym)
-                gap_cnt += 1
-
-        start = st_value - data_base
-        end = start + st_size
-        sym = Symbol(st_value, st_size, code[start:end], rs.name)
-        setattr(sym, "type", "STT_OBJECT")
-        data_symbols.append(sym)
-        prev_symbol = rs
-
-        if rs is raw_symbols[-1] and len(code[end:]) > 0:
-            st_value = end + data_base
-            st_size = len(code[end:])
-            sym = Symbol(st_value, st_size, code[end:], "data.gap%d" % gap_cnt)
-            setattr(sym, "type", "STT_OBJECT")
-            setattr(sym, "anonymous", True)
-            data_symbols.append(sym)
-
-    return data_symbols
-
-
-def export_text_section(symtab, base, code):
-    # text = elf.get_section_by_name(".text")
-    # if not text:
-    #     return None
-
-    # code = text.data()
-    text_base = base
-    text_range = range(base, text_base + len(code))
-    addresses = set()
-    raw_symbols = list()
-
-    for s in symtab.iter_symbols():
-        if s['st_value'] in text_range and s['st_value'] not in addresses:
-            if s['st_info']['type'] in ('STT_FUNC', 'STT_OBJECT'):
-                if s.name in ('__bhs_ldivmod1', '__aeabi_memcpy4'):
-                    continue
-                addresses.add(s['st_value'])
-                raw_symbols.append(s)
-            elif s['st_info']['type'] == 'STT_NOTYPE' and s['st_info']['bind'] == 'STB_GLOBAL' and \
-                    not (s.name[-6:] == '_start' or s.name[-4:] == '_end'):
-                if s.name == '_etext':
-                    print("_etext: %s" % hex(s['st_value']))
-                raw_symbols.append(s)
-            else:
-                pass
-
-    raw_symbols.sort(key=lambda x: x['st_value'])
-    text_symbols = list()
-    prev_symbol = None
-    gap_cnt = 0
-    for i in range(len(raw_symbols)):
-        s = raw_symbols[i]
-        st_value = s['st_value'] & ~1 if s['st_info']['type'] == 'STT_FUNC' else s['st_value']
-        st_size = s['st_size']
-
-        if prev_symbol and s['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
-                prev_symbol['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC'):
-            prev_st_value = prev_symbol['st_value'] & ~1 \
-                if prev_symbol['st_info']['type'] == 'STT_FUNC' else prev_symbol['st_value']
-            prev_st_size = prev_symbol['st_size']
-            if st_value - prev_st_value != prev_st_size:
-                gap_size = st_value - prev_st_value - prev_st_size
-                gap_addr = prev_st_value + prev_st_size
-                if gap_addr in text_range:
-                    start = gap_addr - text_base
-                    end = start + gap_size
-                    sym = Symbol(gap_addr, gap_size, code[start:end], "text.gap%d" % gap_cnt)
-                    setattr(sym, "type", "STT_OBJECT")
-                    setattr(sym, "anonymous", True)
-                    text_symbols.append(sym)
-                    gap_cnt += 1
-
-        if s.name != '__aeabi_memcpy':
-            if st_size == 0 and i < len(raw_symbols) - 1:
-                st_size = raw_symbols[i + 1]['st_value'] - st_value
-                if raw_symbols[i + 1]['st_info']['type'] == 'STT_FUNC':
-                    st_size -= 1
-        else:
-            st_size = 52
-
-        start = st_value - text_base
-        if s['st_info']['type'] == 'STT_FUNC':
-            st_value += 1
-        end = start + st_size
-        fn_code = code[start:end]
-
-        if s['st_info']['type'] == 'STT_NOTYPE':
-            st_type = 'STT_OBJECT'
-        else:
-            st_type = s['st_info']['type']
-
-        sym = Symbol(st_value, st_size, fn_code, s.name)
-        setattr(sym, "type", st_type)
-        text_symbols.append(sym)
-        prev_symbol = s
-
-        if i == len(raw_symbols) - 1:
-            if len(code[end:]) > 0:
-                st_value = end + text_base
-                st_size = len(code[end:])
-                fn_code = code[end:]
-                sym = Symbol(st_value, st_size, fn_code, "text.gap%d" % gap_cnt)
-                setattr(sym, "type", st_type)
-                setattr(sym, "anonymous", True)
-                text_symbols.append(sym)
-
-    text_symbols.sort(key=lambda x: x.address)
-
-    return text_symbols
-
-
-def export_pointers(elf, name, text_range):
-    reloc_table = elf.get_section_by_name(name)
-    if not isinstance(reloc_table, RelocationSection):
-        return None
-
-    ptrs = dict()
-    symbols = elf.get_section(reloc_table["sh_link"])
-
-    for i in reloc_table.iter_relocations():
-        symbol = symbols.get_symbol(i["r_info_sym"])
-        r_type = i["r_info_type"]
-        r_offset = i["r_offset"]
-        if r_type == ENUM_RELOC_TYPE_ARM["R_ARM_ABS32"] and symbol["st_value"] in text_range:
-            ptrs[r_offset] = dict(offset=symbol["st_value"], type=symbol["st_info"]["type"])
-            if symbol["st_info"]["type"] == 'STT_FUNC':
-                ptrs[r_offset]["offset"] -= 1
-
-    return ptrs
-
-
-def export_symbols(elf):
-    symtab = elf.get_section_by_name(".symtab")
-    if not symtab:
-        raise Exception("No symbol table found")
-
-    text = elf.get_section_by_name(".text")
-    if text:
-        text_code = text.data()
-        text_base = text['sh_addr']
-        text_end = text_base + len(text_code)
-        text_range = range(text_base, text_end)
-        text_symbols = export_text_section(symtab, text_base, text_code)
-
-        data = elf.get_section_by_name(".data")
-        data_symbols = None
-        if data:
-            data_code = data.data()
-            data_base = data['sh_addr']
-            # data_range = range(data_base, data_base + len(data_code))
-            data_symbols = export_data_section(symtab, data_base, data_code)
-
-        ptrs = export_pointers(elf, ".rel.text", text_range)
-        ptrs2 = export_pointers(elf, ".rel.data", text_range)
-
-        if ptrs:
-            if ptrs2:
-                ptrs.update(ptrs2)
-        else:
-            ptrs = ptrs2
-
-        if ptrs:
-            setattr(Symbol, "reloc", ptrs)
-
-        return text_symbols, text_end, data_symbols
-    else:
-        raise Exception("No text section!")
-
-
-def export_fn_symbols(elf):
-    symtab = elf.get_section_by_name(".symtab")
-    if not symtab:
-        raise Exception("No symbol table found")
-
-    strtab = elf.get_section_by_name(".strtab")
-    if not strtab:
-        raise Exception("No string table found")
-
-    text = elf.get_section_by_name(".text")
-    if not text:
-        raise Exception("No text section found")
-
-    data_section = elf.get_section_by_name(".data")
-    if data_section:
-        data = data_section.data()
-        data_base = data_section['sh_addr']
-        data_range = range(data_base, data_base + len(data))
-
-    code = text.data()
-    text_base = text['sh_addr']
-    text_range = range(text_base, text_base + len(code))
-
-    fn_symbols = list()
-    addresses = set()
-
-    setattr(Symbol, "reloc", export_pointers(elf, text_range, data_range if data_section else None))
-    raw_symbols = list()
-
-    etext = text_base + len(code)
-
-    # Extract all functions
-    for s in symtab.iter_symbols():
-        if s['st_value'] in text_range and s['st_value'] not in addresses:
-            if s['st_info']['type'] in ('STT_FUNC', 'STT_OBJECT'):
-                if strtab.get_string(s['st_name']) in ('__bhs_ldivmod1', '__aeabi_memcpy4'):
-                    continue
-                addresses.add(s['st_value'])
-                raw_symbols.append(s)
-            elif s['st_info']['type'] == 'STT_NOTYPE' and s['st_info']['bind'] == 'STB_GLOBAL' and \
-                    not (s.name[-6:] == '_start' or s.name[-4:] == '_end'):
-                if s.name == '_etext':
-                    print("_etext: %s" % hex(s['st_value']))
-                raw_symbols.append(s)
-            else:
-                pass
-        elif data_section and s['st_value'] in data_range and s['st_info']['type'] == 'STT_OBJECT':
-            raw_symbols.append(s)
-            print(s.name)
-        else:
-            pass
-
-    raw_symbols.sort(key=lambda x: x['st_value'])
-
-    prev_symbol = None
-    gap_cnt = 0
-    for i in range(len(raw_symbols)):
-        s = raw_symbols[i]
-        st_value = s['st_value'] & ~1 if s['st_info']['type'] == 'STT_FUNC' else s['st_value']
-        st_size = s['st_size']
-
-        print(s.name)
-
-        if prev_symbol and s['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
-                prev_symbol['st_info']['type'] in ('STT_OBJECT', 'STT_FUNC') and \
-                (s['st_value'] in text_range and prev_symbol['st_value'] in text_range or s['st_value'] in data_range \
-                 and prev_symbol['st_value'] in data_range):
-            prev_st_value = prev_symbol['st_value'] & ~1 \
-                if prev_symbol['st_info']['type'] == 'STT_FUNC' else prev_symbol['st_value']
-            prev_st_size = prev_symbol['st_size']
-            if st_value - prev_st_value != prev_st_size:
-                gap_size = st_value - prev_st_value - prev_st_size
-                gap_addr = prev_st_value + prev_st_size
-                if gap_addr in text_range:
-                    start = gap_addr - text_base
-                    end = start + gap_size
-                    fn_code = code[start:end]
-                elif data_section and gap_addr in data_range:
-                    start = gap_addr - data_base
-                    end = start + gap_size
-                    fn_code = data[start:end]
-                else:
-                    assert False
-
-                sym = Symbol(gap_addr, gap_size, fn_code, "gap%d" % gap_cnt)
-                setattr(sym, "type", "STT_OBJECT")
-                setattr(sym, "anonymous", True)
-                fn_symbols.append(sym)
-                gap_cnt += 1
-
-        if s.name != '__aeabi_memcpy':
-            if st_size == 0 and i < len(raw_symbols) - 1:
-                st_size = raw_symbols[i + 1]['st_value'] - st_value
-                if raw_symbols[i + 1]['st_info']['type'] == 'STT_FUNC':
-                    st_size -= 1
-        else:
-            st_size = 52
-
-        if s['st_value'] in text_range:
-            start = st_value - text_base
-            if s['st_info']['type'] == 'STT_FUNC':
-                st_value += 1
-            end = start + st_size
-            fn_code = code[start:end]
-        elif data_section and s['st_value'] in data_range:
-            start = st_value - data_base
-            end = start + st_size
-            fn_code = data[start:end]
-        else:
-            assert False
-
-        if s['st_info']['type'] == 'STT_NOTYPE':
-            st_type = 'STT_OBJECT'
-        else:
-            st_type = s['st_info']['type']
-
-        if (strtab.get_string(s['st_name']) == '__sys_write'):
-            assert False
-
-        sym = Symbol(st_value, st_size, fn_code, strtab.get_string(s['st_name']))
-        setattr(sym, "type", st_type)
-        fn_symbols.append(sym)
-        prev_symbol = s
-
-        if i == len(raw_symbols) - 1:
-            if len(code[end:]) > 0:
-                st_value = end + text_base
-                st_size = len(code[end:])
-                fn_code = code[end:]
-                sym = Symbol(st_value, st_size, fn_code, "gap%d" % gap_cnt)
-                setattr(sym, "type", st_type)
-                setattr(sym, "anonymous", True)
-                fn_symbols.append(sym)
-
-        fn_symbols.sort(key=lambda x: x.address)
-
-    return fn_symbols, etext
 
 
 def symbol_translate(s, fw: FirmwareIR):
     if s.type == "STT_FUNC":
         ir = FunctionIR(s.name, 0, fw)
         for i in s.disasm():
-            # print("%s: %s\t%s\n" % (hex(i.address), i.mnemonic, i.op_str))
             ir.append_child(i)
         ir.commit()
         if s.address in fw.vector.vector:
@@ -419,394 +55,20 @@ def symbol_translate(s, fw: FirmwareIR):
 
     return ir
 
-
-def do_instrument(src_ir, new_ir, pos='before'):
-    if isinstance(src_ir.parent, ITBlockIR):
-        new_ir.cond = src_ir.cond
-        it_block = src_ir.parent
-        if pos != 'replace':
-            if it_block.size < 4:
-                if src_ir.cond == it_block.first_cond:
-                    it_block.insert_child(src_ir, new_ir, pos=pos)
-                else:
-                    it_block.insert_child(src_ir, new_ir, cond='e', pos=pos)
-            else:
-                new_it_block = it_block.split(it_block.child_index(src_ir))
-                new_it_block.insert_child(src_ir, new_ir, pos=pos)
-                assert isinstance(it_block.parent, FunctionIR)
-                it_block.parent.insert_child(it_block, new_it_block, pos='after')
-        else:
-            it_block.insert_child(src_ir, new_ir, pos='replace')
-    else:
-        assert isinstance(src_ir.parent, FunctionIR)
-        src_ir.parent.insert_child(src_ir, new_ir, pos=pos)
-
-
-def reference_handoff(dst_ir, src_ir):
-    if hasattr(src_ir, "ref_by"):
-        for i in src_ir.ref_by:
-            i.ref = dst_ir
-        delattr(src_ir, "ref_by")
-
-
-def fn_instrument(fn: FunctionIR, fw: FirmwareIR):
-    report = {}
-    jump_tables = []
-    abs_literals = LiteralPoolIR()
-
-    if fn.name[0:8] == "__Secure" or fn.name.find("__benchmark") == 0:
-        first_ir = None
-        for i in fn.child_iter():
-            first_ir = i
-            break
-        do_instrument(first_ir, IR(code="orr lr, lr, #0x30000000"))
-    else:
-        need_instrument = lambda x: isinstance(x, BranchIR) and x.link or \
-                                    isinstance(x, IndirectBranchIR) or \
-                                    isinstance(x, PopIR) or \
-                                    isinstance(x, ReturnIR) or \
-                                    isinstance(x, LoadBranchAddressIR) or \
-                                    isinstance(x, LiteralPoolIR) or \
-                                    isinstance(x, AddressToRegisterIR) or \
-                                    isinstance(x, LoadBranchAddressIR) or \
-                                    isinstance(x, WfiIR)
-        i_point = list()
-        for i in fn.child_iter():
-            if isinstance(i, BlockIR) and not (isinstance(i, BranchTableIR) or isinstance(i, LiteralPoolIR)):
-                i_point += list(filter(lambda x: need_instrument(x), [ir for ir in i.child_iter()]))
-            elif isinstance(i, BranchTableIR) and i.ref_by_load:
-                jump_tables.append(i)
-            elif isinstance(i, LiteralPoolIR):
-                for literal in i.child_iter():
-                    if literal.len == 8:
-                        abs_literals.append_child(literal)
-            else:
-                if need_instrument(i):
-                    i_point.append(i)
-
-        objects = list(filter(lambda x: isinstance(x, VectorIR) or isinstance(x, FunctionIR),
-                              [o for o in fw.child_iter()]))
-
-        if len(i_point) > 0:
-            for i in i_point:
-                if isinstance(i, BranchIR):
-                    assert i.link
-                    i.link = False
-                    ir = LoadReturnIndexIR(objects.index(fn), parent=fn)
-                    reference_handoff(ir, i)
-                    do_instrument(i, ir)
-                    if "direct_call" in report:
-                        report["direct_call"] += ir.len
-                    else:
-                        report["direct_call"] = ir.len
-                elif isinstance(i, IndirectBranchIR):
-                    if i.link:
-                        if str(i.reg) != 'r12':
-                            ir = LoadFuncPtrIR(i.reg, parent=fn)
-                            reference_handoff(ir, i)
-                            do_instrument(i, ir)
-                        ir = LoadReturnIndexIR(objects.index(fn), parent=fn)
-                        if str(i.reg) == 'r12':
-                            reference_handoff(ir, i)
-                        do_instrument(i, ir)
-                        ir = BranchIR(i.offset, parent=fn)
-                        ir.len = 4
-                        ir.ref = fw.indirect_call_veneer
-                        do_instrument(i, ir, pos='replace')
-                        if "indirect_call" in report:
-                            report["indirect_call"] += ir.len - i.len
-                        else:
-                            report["indirect_call"] = ir.len - i.len
-                    elif str(i.reg) == 'lr':
-                        if not fn.isr:
-                            ir = BranchIR(i.offset, parent=fn)
-                            ir.len = 4
-                            ir.ref = fw.return_veneer.child_at(1)
-                            reference_handoff(ir, i)
-                            do_instrument(i, ir, pos='replace')
-                            if "return" in report:
-                                report["return"] += ir.len - i.len
-                            else:
-                                report["return"] = ir.len - i.len
-                    else:
-                        if str(i.reg) != 'r12':
-                            ir = LoadFuncPtrIR(i.reg, parent=fn)
-                            reference_handoff(ir, i)
-                            do_instrument(i, ir)
-                            if "indirect_branch" in report:
-                                report["indirect_branch"] += ir.len
-                            else:
-                                report["indirect_branch"] = ir.len
-                        ir = BranchIR(i.offset, parent=fn)
-                        ir.len = 4
-                        ir.ref = fw.indirect_branch_veneer
-                        if str(i.reg) == 'r12':
-                            reference_handoff(ir, i)
-                        do_instrument(i, ir, pos='replace')
-                        if "indirect_branch" in report:
-                            report["indirect_branch"] += ir.len - i.len
-                        else:
-                            report["indirect_branch"] = ir.len - i.len
-                elif (isinstance(i, PopIR) or isinstance(i, ReturnIR)) and not fn.isr:
-                    """
-                    pop {pc} / ldr pc, [sp], #4
-                    """
-                    ir = BranchIR(0)
-                    ir.len = 4
-                    ir.ref = fw.return_veneer
-
-                    if isinstance(i, PopIR):
-                        i.remove_reg(ARM_REG_PC)
-                        do_instrument(i, ir, pos='after')
-                        if "return" in report:
-                            report["return"] += ir.len
-                        else:
-                            report["return"] = ir.len
-                    else:
-                        reference_handoff(ir, i)
-                        do_instrument(i, ir, pos='replace')
-                        if "return" in report:
-                            report["return"] += ir.len - i.len
-                        else:
-                            report["return"] = ir.len - i.len
-                elif isinstance(i, AddressToRegisterIR):
-                    ir = LoadBranchTableIR(reg=i.reg, ref=i.ref)
-                    if isinstance(i.ref, BranchTableIR):
-                        i.ref.ref_by_load = ir
-                    do_instrument(i, ir, pos='replace')
-                    do_instrument(ir, LoadBranchTableIR(top=True, reg=i.reg, ref=i.ref), pos='after')
-                elif isinstance(i, LoadBranchAddressIR):
-                    i.dest_reg = i.base_reg
-                    ir = IR(code="add pc, %s" % str(i.dest_reg))
-                    do_instrument(i, ir, pos='after')
-                elif isinstance(i, WfiIR):
-
-                    ir = BranchIR(0)
-                    ir.len = 4
-                    ir.ref = fw.wfi_veneer
-                    do_instrument(i, ir, pos='replace')
-
-                    ir2 = LoadReturnIndexIR(objects.index(fn), parent=fn)
-                    do_instrument(ir, ir2)
-
-                    do_instrument(ir2, IR(0, "mov r12, lr"))
-                    do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
-
-                    # do_instrument(ir, IR(0, "mov r12, lr"))
-                    # do_instrument(ir, IR(0, "mov lr, r12"), pos='after')
-                    #
-                    #
-                    #
-                    # do_instrument(i, IR(0, "mov r12, lr"))
-                    # do_instrument(i, IR(0, "mov lr, r12"), pos='after')
-                    # ir = BranchIR(0, link=True)
-                    # ir.len = 4
-                    # ir.ref = fw.wfi_veneer
-                    # do_instrument(i, ir, pos='replace')
-                else:
-                    pass
-
-    fn.commit()
-    return report, jump_tables, abs_literals
-
-
-def pendsv_hook_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
-    fn = FunctionIR("PendSV_Hook0_veneer", 0)
-
-    ir1 = BlockIR(0)
-    ir1.append_child(LiteralIR(0, value=cmse_fn["PendSV_hook0"]))
-
-    ir2 = LoadLiteralIR(0)
-    ir2.reg = ArmReg(ARM_REG_PC)
-    ir2.ref = ir1
-    ir2.len = 4
-
-    fn.append_child(ir2)  # 0: ldr pc, PendSV_Hook
-    fn.append_child(ir1)  # 4: PendSV_Hook
-    fw.insert_child(src, fn, pos='after')
-    stretched_size = fn.layout_refresh()
-    # orig_size = fn.len
-    # fw.stretch(fn, fn.len - orig_size)
-    fw.stretch(fn, stretched_size)
-    setattr(fw, "PendSV_Hook0_veneer", fn)
-    return fn.len
-
-
-def pendsv_instrument(fw: FirmwareIR, fn: FunctionIR):
-    first_ir = None
-    for i in fn.child_iter():
-        if not first_ir:
-            first_ir = i
+def data_section_relocate(fw, orig_data, new_addr):
+    for ir in fw.child_iter():
+        if isinstance(ir, ObjectIR) and ir.name == "__data_section_table":
+            offset = 0
+            code = ir.code
+            while offset < ir.len:
+                value = int.from_bytes(code[offset:offset + 4], byteorder='little')
+                if value == orig_data:
+                    code[offset:offset + 4] = bytearray(new_addr.to_bytes(4, byteorder="little"))
+                    ir.code = code
+                offset += 4
             break
 
-    ir = BranchIR(0)
-    ir.ref = fw.PendSV_Hook0_veneer
-    ir.link = True
-
-    fn.insert_child(first_ir, IR(0, bytearray((b"\x70\x46"))))  # 0: mov r0, lr
-    fn.insert_child(first_ir, ir)  # 2: bl PendSV_Hook0_veneer
-    fn.insert_child(first_ir, IR(0, bytearray(b"\x86\x46")))  # 6: mov lr, r0
-
-    return fn.layout_refresh()
-
-
-def indirect_branch_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
-    fn = FunctionIR("indirect_branch_veneer", 0)
-
-    fn.append_child(IR(0, "push {r0}"))  # push {r0}
-    fn.append_child(IR(0, "mov r0, #0xFF"))  # mov r0, #0xFF
-    fn.append_child(IR(0, "eors r0, r12, lsr #24"))  # eors r0, r12, lsr #24
-    fn.append_child(IR(0, "pop {r0}"))  # pop {r0}
-
-    it_block = ITBlockIR(0)
-    it_block.first_cond = ARM_CC_EQ
-    ir = IndirectBranchIR(ARM_REG_R12)
-    ir.cond = ARM_CC_EQ
-    it_block.append_child(ir)
-
-    fn.append_child(it_block)
-    fn.append_child(IR(0, "tst r12, #0x10000000"))  # tst r12, #0x10000000
-    it_block = ITBlockIR(0)
-    it_block.first_cond = ARM_CC_NE
-
-    literal_pool = BlockIR(0)
-    literal_pool.append_child(LiteralIR(0, value=cmse_fn["call_address_dispatch"]))  # indirect_call_dispatch
-    literal_pool.append_child(LiteralIR(0, value=cmse_fn["return_address_dispatch"]))  # return_dispatch
-
-    ir = LoadLiteralIR(0)
-    ir.reg = ArmReg(ARM_REG_PC)
-    ir.len = 4
-    ir.cond = ARM_CC_NE
-    ir.ref = literal_pool.child_at(0)
-
-    it_block.append_child(ir)
-
-    ir = LoadLiteralIR(0)
-    ir.reg = ArmReg(ARM_REG_PC)
-    ir.len = 4
-    ir.cond = ARM_CC_EQ
-    ir.ref = literal_pool.child_at(1)
-
-    # it_block.append_child(ir)
-
-    fn.append_child(it_block)
-    fn.append_child(ir)
-    fn.append_child(literal_pool)
-    fw.insert_child(src, fn, pos='after')
-    # orig_size = fn.len
-    stretched_size = fn.layout_refresh()
-    fw.stretch(fn, stretched_size)
-    setattr(fw, "indirect_branch_veneer", fn)
-    return fn.len
-
-
-def indirect_call_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
-    fn = FunctionIR("indirect_call_veneer", 0)
-    ir = LoadLiteralIR(0, parent=fn)
-    ir.reg = ArmReg(ARM_REG_PC)
-    ir.len = 4
-    ir2 = BlockIR(0)
-    ir2.append_child(LiteralIR(0, value=cmse_fn["call_address_dispatch"]))
-    ir.ref = ir2
-    fn.append_child(ir)
-    fn.append_child(ir2)
-    fw.insert_child(src, fn, pos='after')
-    # orig_size = fn.len
-    stretched_size = fn.layout_refresh()
-    fw.stretch(fn, stretched_size)
-    setattr(fw, "indirect_call_veneer", fn)
-    return fn.len
-
-
-def return_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
-    fn = FunctionIR("return_veneer", 0)
-
-    fn.append_child(IR(code="ldr lr, [sp], #4"))
-    fn.append_child(IR(code="mov r12, lr, lsr #24"))
-    fn.append_child(IR(code="cmp r12, #0xFF"))
-
-    it_block = ITBlockIR(0)
-    it_block.first_cond = ARM_CC_EQ
-    ir = IndirectBranchIR(ARM_REG_LR)
-    ir.cond = ARM_CC_EQ
-    it_block.append_child(ir)
-    ir = LoadLiteralIR(0, parent=fn)
-    ir.reg = ArmReg(ARM_REG_PC)
-    ir.len = 4
-    ir2 = BlockIR(0)
-    ir2.append_child(LiteralIR(0, value=cmse_fn["return_address_dispatch"]))
-    ir.ref = ir2
-    fn.append_child(it_block)
-    fn.append_child(ir)
-    fn.append_child(ir2)
-
-    fw.insert_child(src, fn, pos='after')
-
-    # orig_size = fn.len
-    stretched_size = fn.layout_refresh()
-    fw.stretch(fn, stretched_size)
-    setattr(fw, "return_veneer", fn)
-
-    return fn.len
-
-
-def wfi_veneer_instrument(fw: FirmwareIR, src: FunctionIR, cmse_fn):
-    fn = FunctionIR("wfi_veneer", 0)
-    ir = LoadLiteralIR(0, parent=fn)
-    ir.reg = ArmReg(ARM_REG_PC)
-    ir.len = 4
-    ir2 = BlockIR(0)
-    ir2.append_child(LiteralIR(0, value=cmse_fn["enter_low_power_mode"]))
-    ir.ref = ir2
-    fn.append_child(ir)
-    fn.append_child(ir2)
-    fw.insert_child(src, fn, pos='after')
-    stretched_size = fn.layout_refresh()
-    fw.stretch(fn, stretched_size)
-    setattr(fw, "wfi_veneer", fn)
-
-    return fn.len
-
-def fw_instrument(fw, cmse_fn, has_rtos):
-    fn_objs = list(filter(lambda x: isinstance(x, FunctionIR), [o for o in fw.child_iter()]))
-
-    # instrument indirect call veneer
-    indirect_branch_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-    indirect_call_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-    return_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-    wfi_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-
-    report = {}
-    if has_rtos:
-        pendsv_hook_veneer_instrument(fw, fn_objs[-1], cmse_fn)
-
-    fw.commit()
-
-    for fn in fw.child_iter():
-        if isinstance(fn, FunctionIR) and fn.name not in ("indirect_call_veneer", "return_veneer",
-                                                          "indirect_branch_veneer",
-                                                          "PendSV_Hook0_veneer", "PendSV_Hook1_veneer"):
-            if has_rtos and fn.name == "PendSV_Handler":
-                report["PendSV"] = pendsv_instrument(fw, fn)
-            fn_report, jump_tables, abs_literals = fn_instrument(fn, fw)
-            for k in fn_report:
-                if k in report:
-                    report[k] += fn_report[k]
-                else:
-                    report[k] = fn_report[k]
-
-            for i in jump_tables:
-                fw.append_child(i)
-
-            if abs_literals.size > 0:
-                fw.append_child(abs_literals)
-
-    fw.commit()
-
-    return report
-
-
-def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
+def do_relocate(fw: FirmwareIR, ir, reloc, *, encode_fptr=True, offset=0):
     func_ptr_tbl_sz = 0
     objects = list(filter(lambda x: isinstance(x, VectorIR) or isinstance(x, FunctionIR), [o for o in fw.child_iter()]))
     if isinstance(ir, LiteralIR):
@@ -824,9 +86,13 @@ def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
             new_value = fw.fn_map[value - 1]["ir"].addr + 1
         else:
             # Encode function pointer as the shuffleable form
-            assert objects.index(fw.fn_map[value - 1]["ir"]) <= 0xFFFF
-            new_value = ((0x1000 | objects.index(fw.fn_map[value - 1]["ir"])) << 16) + 1
-            func_ptr_tbl_sz += 4
+            if encode_fptr:
+                assert objects.index(fw.fn_map[value - 1]["ir"]) <= 0xFFFF
+                new_value = ((0x1000 | objects.index(fw.fn_map[value - 1]["ir"])) << 16) + 1
+                func_ptr_tbl_sz += 4
+            else:
+                new_value = fw.fn_map[value - 1]["ir"].addr
+                print(f"new_value:{hex(new_value)}")
     else:
         if value not in fw.fn_map:
             for k in fw.fn_map:
@@ -848,17 +114,17 @@ def do_relocate(fw: FirmwareIR, ir, reloc, offset=0):
     return func_ptr_tbl_sz
 
 
-def relocate_recursive(fw: FirmwareIR, ir: IR):
+def relocate_recursive(fw: FirmwareIR, ir: IR, encode_fptr=True):
     func_ptr_tbl_sz = 0
     if hasattr(ir, "child_iter"):
         for i in ir.child_iter():
-            func_ptr_tbl_sz += relocate_recursive(fw, i)
+            func_ptr_tbl_sz += relocate_recursive(fw, i, encode_fptr)
     else:
         if hasattr(ir, "reloc"):
-            func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc)
+            func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc, encode_fptr=encode_fptr)
         elif hasattr(ir, "reloc_map"):
             for k in ir.reloc_map:
-                func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc_map[k], offset=k)
+                func_ptr_tbl_sz += do_relocate(fw, ir, ir.reloc_map[k], offset=k, encode_fptr=encode_fptr)
         else:
             pass
     return func_ptr_tbl_sz
@@ -892,20 +158,6 @@ def output_revise_item(ir, fn, objects):
                    (repr(ir), ir.parent, ir.addr - fn.addr, data), 1
         else:
             return None
-
-
-def data_section_relocate(fw, orig_data, new_addr):
-    for ir in fw.child_iter():
-        if isinstance(ir, ObjectIR) and ir.name == "__data_section_table":
-            offset = 0
-            code = ir.code
-            while offset < ir.len:
-                value = int.from_bytes(code[offset:offset + 4], byteorder='little')
-                if value == orig_data:
-                    code[offset:offset + 4] = bytearray(new_addr.to_bytes(4, byteorder="little"))
-                    ir.code = code
-                offset += 4
-            break
 
 
 def output_c_syntax(fw, path):
@@ -1001,20 +253,19 @@ def output_c_syntax(fw, path):
     print("Indirect Call Table Size: %d bytes" % indirect_branch_tbl)
 
 
-
-
-
 def main(argv):
     input_file = ''
     output_file = ''
     output_path = ''
-    entry_point = 0
+    entry_point = 0x20000
     cmse_lib = ''
     has_rtos = False
+    do_inst = True
 
     try:
         opts, args = getopt.getopt(argv, 'c:e:hi:o:p:',
-                                   ['--cmse-lib', 'entry-point=', 'input-file=', 'output-file=', 'output-path', 'rtos'])
+                                   ['--cmse-lib', 'entry-point=', 'input-file=', 'output-file=', 'output-path', 'rtos',
+                                    'no-instrument'])
     except getopt.GetoptError:
         sys.exit(1)
 
@@ -1031,6 +282,8 @@ def main(argv):
             output_path = arg
         elif opt == '--rtos':
             has_rtos = True
+        elif opt == '--no-instrument':
+            do_inst = False
         else:
             print('Invalid argument - %s' % opt)
             sys.exit(1)
@@ -1067,18 +320,21 @@ def main(argv):
                     first_data_ir = ir
 
         fw.commit()
-        report = fw_instrument(fw, cmse_fn, has_rtos)
+
+        if do_inst:
+            report = fw_instrument(fw, cmse_fn, has_rtos)
+
         fw.layout_refresh()
 
-        report["indirect_call_veneer"] = fw.indirect_call_veneer.len
-        report["return_veneer"] = fw.return_veneer.len
-        report["indirect_branch_veneer"] = fw.indirect_branch_veneer.len
-
-        if hasattr(fw, "PendSV_Hook0_veneer"):
-            report["pendsv_hook_veneer"] = fw.PendSV_Hook0_veneer.len
+        if do_inst:
+            report["indirect_call_veneer"] = fw.indirect_call_veneer.len
+            report["return_veneer"] = fw.return_veneer.len
+            report["indirect_branch_veneer"] = fw.indirect_branch_veneer.len
+            if hasattr(fw, "PendSV_Hook0_veneer"):
+                report["pendsv_hook_veneer"] = fw.PendSV_Hook0_veneer.len
 
         fw.verify()
-        func_ptr_tbl_sz = relocate_recursive(fw, fw)
+        func_ptr_tbl_sz = relocate_recursive(fw, fw, encode_fptr=do_inst)
         fw.asm()
 
         if first_data_ir:
@@ -1104,13 +360,17 @@ def main(argv):
             print()
 
         fw.save_as_file(output_file)
+
         print("New firmware length: %d (%d) bytes" % (fw.len, len(fw.code)))
         output_c_syntax(fw, output_path)
         print("Function pointer table size: %d" % func_ptr_tbl_sz)
         print("Total function size (original): %d" % orig_fn_total_size)
         print("Total function size (new): %d" % new_fn_total_size)
-        print(report)
+        if do_inst:
+            print(report)
         print("Total %d functions" % fn_total)
 
+    return 0
+
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))
